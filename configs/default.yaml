@@ -1,0 +1,22 @@
+# config.yaml
+training:
+  batch_size: 16
+  epochs: 50
+  seed: 0
+  test_split: 0.2
+
+model:
+  modes: 27
+  width: 8
+
+optimizer:
+  lr: 0.001
+  step_size: 20
+  gamma: 0.5
+
+dataset:
+  test_file: "data/pattern_paths_test_44_44.h5"
+  train_file: "data/pattern_paths_training_44_44.h5"
+
+save:
+  results_path: "results/"
