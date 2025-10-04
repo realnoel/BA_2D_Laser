@@ -1,11 +1,22 @@
 import h5py
 
 import os
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-def save_temperature_plot(temp_tensor, name_prefix="temp", epoch=None):
+def _uniquify(filepath: str) -> str:
+    """If filepath exists, append _1, _2, ... before the extension."""
+    base, ext = os.path.splitext(filepath)
+    i = 1
+    candidate = filepath
+    while os.path.exists(candidate):
+        candidate = f"{base}_{i}{ext}"
+        i += 1
+    return candidate
+
+def save_temperature_plot(temp_tensor, path, name_prefix="temp", epoch=None):
     """
     Save a 2D temperature field as a .png image in ./results folder.
     
@@ -29,10 +40,13 @@ def save_temperature_plot(temp_tensor, name_prefix="temp", epoch=None):
     timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
 
     if epoch is not None:
-        os.makedirs(f"results/{epoch}", exist_ok=True)
-        filename = f"results/{epoch}/{name_prefix}_{timestamp}.png"
+        os.makedirs(f"{path}/{epoch}", exist_ok=True)
+        filename = f"{path}/{epoch}/{name_prefix}_{timestamp}.png"
     else:
-        filename = f"results/{name_prefix}_{timestamp}.png"
+        filename = f"{path}/{name_prefix}_{timestamp}.png"
+
+    filename = _uniquify(filename)
+
 
     # --- Plot ---
     plt.figure(figsize=(5, 4))

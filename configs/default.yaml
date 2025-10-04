@@ -6,8 +6,12 @@ training:
   test_split: 0.2
 
 model:
-  modes: 27
-  width: 8
+  modes1: 24
+  modes2: 24
+  width: 16
+  in_channels: 4
+  out_channels: 1
+  pad: 8
 
 optimizer:
   lr: 0.001

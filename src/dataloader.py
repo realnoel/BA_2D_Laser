@@ -115,9 +115,19 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
         return norm
     
     def load_norm(self, norm):
-        self.min_p = norm[0]
-        self.max_p = norm[1]
-        self.min_shift = norm[2]
-        self.max_shift = norm[3]
-        self.min_model = norm[4]
-        self.max_model = norm[5]
+        """Accepts (tuple) or (dict) and loads into this dataset."""
+        if isinstance(norm, dict):
+            self.min_p     = float(norm["min_p"])
+            self.max_p     = float(norm["max_p"])
+            self.min_shift = float(norm["min_shift"])
+            self.max_shift = float(norm["max_shift"])
+            self.min_model = float(norm["min_model"])
+            self.max_model = float(norm["max_model"])
+        else:
+            # tuple/list: (min_p, max_p, min_shift, max_shift, min_model, max_model)
+            self.min_p     = float(norm[0])
+            self.max_p     = float(norm[1])
+            self.min_shift = float(norm[2])
+            self.max_shift = float(norm[3])
+            self.min_model = float(norm[4])
+            self.max_model = float(norm[5])

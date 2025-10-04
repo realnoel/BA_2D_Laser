@@ -11,6 +11,7 @@ from torch.nn import MSELoss
 from dataloader import PDEDatasetLoader_Multi
 from model_fno import FNO2d, PadCropFNO
 from utils import save_temperature_plot
+from utils_train import save_checkpoint, load_checkpoint, now_run_id
 
 def train(fno, should_evaluate=False):
     # Set device
@@ -20,6 +21,10 @@ def train(fno, should_evaluate=False):
     start_time = time.time()
     torch.manual_seed(config["training"]["seed"])
     np.random.seed(config["training"]["seed"])
+
+    run_id = now_run_id()
+    print(f"[INFO] Checkpoints will be saved under checkpoints/{run_id}")
+
     # Load datasets
     full_dataset = PDEDatasetLoader_Multi(which="train")
     # print("Training dataset shape:", full_dataset.U.shape)
@@ -38,16 +43,10 @@ def train(fno, should_evaluate=False):
                                                )
 
     # Loads validation dataset for final evaluation
-    validation_dataset = PDEDatasetLoader_Multi(which="test")
-
-    # Loads training normalization values into validation dataset
-    validation_dataset.min_p, validation_dataset.max_p, \
-    validation_dataset.min_shift, validation_dataset.max_shift, \
-    validation_dataset.min_model, validation_dataset.max_model = norm
+    # validation_dataset = PDEDatasetLoader_Multi(which="test")
 
     batch_size = config["training"]["batch_size"]
-    # modes = config["model"]["modes"]
-    # width = config["model"]["width"]
+
     # Create data loaders for batching
     training_set = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     testing_set = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -60,7 +59,10 @@ def train(fno, should_evaluate=False):
     l = MSELoss()
     freq_print = 1
 
+    best_val = float("inf")
     epochs = config["training"]["epochs"]
+
+
     for epoch in range(epochs):
         train_mse = 0.0
         fno.train()
@@ -99,6 +101,23 @@ def train(fno, should_evaluate=False):
 
         if epoch % freq_print == 0: print("######### Epoch:", epoch, " ######### Train Loss:", train_mse, " ######### Relative L2 Test Norm:", test_relative_l2)
 
+        # ---- Checkpoint ----
+        is_best = test_relative_l2 < best_val
+        if is_best:
+            best_val = test_relative_l2
+
+        save_checkpoint(
+            model=fno,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=epoch,
+            val_metric=test_relative_l2,
+            config=config,
+            norm_tuple=norm,
+            run_id=run_id,
+            is_best=is_best
+        )
+
     # Final evaluation on validation dataset
     if should_evaluate:
         end_time = time.time()
@@ -109,8 +128,12 @@ with open("configs/default.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 if __name__ == "__main__":
-    modes = config["model"]["modes"]
+    modes1 = config["model"]["modes1"]
+    modes2 = config["model"]["modes2"]
     width = config["model"]["width"]
-    fno = PadCropFNO(FNO2d(modes1=24, modes2=24, width=16, in_channels=4), pad=8) # Width is 4
+    in_channels = config["model"]["in_channels"]
+    out_channels = config["model"]["out_channels"]
+    pad = config["model"]["pad"]
+    fno = PadCropFNO(FNO2d(modes1=modes1, modes2=modes2, width=width, in_channels=in_channels), pad=pad)
     train(fno, should_evaluate=True)
 
