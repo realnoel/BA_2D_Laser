@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import time
 import yaml
+from datetime import datetime
 
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam, LBFGS
@@ -9,7 +10,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.nn import MSELoss
 
 from dataloader import PDEDatasetLoader_Multi
-from model_fno import FNO2d, PadCropFNO
+from model_fno import FNO2d
 from utils import save_temperature_plot
 from utils_train import save_checkpoint, load_checkpoint, now_run_id
 
@@ -92,8 +93,8 @@ def train(fno, should_evaluate=False):
                     y = y.unsqueeze(1)     # -> (B, 1, H, W)
 
                 # Save prediction and ground truth of first batch element of last epoch
-                save_temperature_plot(y_pred[0, 0], name_prefix="prediction", epoch=epoch)
-                save_temperature_plot(y[0, 0], name_prefix="groundtruth", epoch=epoch)
+                save_temperature_plot(y_pred[0, 0], path=f"results/{timestamp}",name_prefix="prediction", epoch=epoch)
+                save_temperature_plot(y[0, 0], path=f"results/{timestamp}", name_prefix="groundtruth", epoch=epoch)
 
                 loss_f = (torch.mean((y_pred - y) ** 2) / torch.mean(y ** 2)) ** 0.5 * 100
                 test_relative_l2 += loss_f.item()
@@ -128,12 +129,13 @@ with open("configs/default.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 if __name__ == "__main__":
-    modes1 = config["model"]["modes1"]
-    modes2 = config["model"]["modes2"]
-    width = config["model"]["width"]
-    in_channels = config["model"]["in_channels"]
-    out_channels = config["model"]["out_channels"]
-    pad = config["model"]["pad"]
-    fno = PadCropFNO(FNO2d(modes1=modes1, modes2=modes2, width=width, in_channels=in_channels), pad=pad)
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+    fno = FNO2d(modes1=config["model"]["modes1"], 
+                modes2=config["model"]["modes2"], 
+                width=config["model"]["width"], 
+                in_channels=config["model"]["in_channels"], 
+                out_channels=config["model"]["out_channels"], 
+                pad=config["model"]["pad"]
+                )
     train(fno, should_evaluate=True)
 

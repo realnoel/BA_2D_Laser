@@ -16,7 +16,7 @@ def _uniquify(filepath: str) -> str:
         i += 1
     return candidate
 
-def save_temperature_plot(temp_tensor, path, name_prefix="temp", epoch=None):
+def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch=None):
     """
     Save a 2D temperature field as a .png image in ./results folder.
     

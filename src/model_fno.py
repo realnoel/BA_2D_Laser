@@ -41,9 +41,10 @@ class SpectralConv2d(nn.Module):
 
 
 class FNO2d(nn.Module):
-    def __init__(self, modes1, modes2, width, in_channels, out_channels=1):
+    def __init__(self, modes1, modes2, width, in_channels, out_channels=1, pad=8):
         super().__init__()
         self.width = width
+        self.pad = pad
         self.lift  = nn.Conv2d(in_channels, width, 1)
 
         self.spect1 = SpectralConv2d(width, width, modes1, modes2)
@@ -55,25 +56,18 @@ class FNO2d(nn.Module):
         self.skip3  = nn.Conv2d(width, width, 1)
 
         self.proj   = nn.Conv2d(width, out_channels, 1)
-        self.act    = nn.Tanh()
+        self.act    = nn.SiLU()
 
     def forward(self, x):
         # x: (B, C_in, H, W)  e.g. (B, 4, 44, 44)
         x = self.lift(x)                        # (B, width, H, W)
+        # Pad input
+        x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode='reflect')
+        # Spectral layers
         x = self.act(self.spect1(x) + self.skip1(x))
         x = self.act(self.spect2(x) + self.skip2(x))
         x = self.act(self.spect3(x) + self.skip3(x))
+        # Remove padding
+        x = x[..., self.pad:-self.pad, self.pad:-self.pad]
         y = self.proj(x)                        # (B, 1, H, W)
         return y
-    
-class PadCropFNO(nn.Module):
-    def __init__(self, core_fno: nn.Module, pad: int = 8):
-        super().__init__()
-        self.core = core_fno
-        self.pad  = pad
-
-    def forward(self, x):
-        # x: (B, C, H, W)
-        x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode='reflect')
-        y = self.core(x)
-        return y[..., self.pad:-self.pad, self.pad:-self.pad]
