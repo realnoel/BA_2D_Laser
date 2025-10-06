@@ -1,3 +1,6 @@
+#
+# Fourier Neural Operator in 2D, modified from: camlab-ethz Tutorial 5 Operator Learing - Fourier Neural Operator
+#
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

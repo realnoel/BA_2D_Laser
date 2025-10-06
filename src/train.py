@@ -11,6 +11,7 @@ from torch.nn import MSELoss
 
 from dataloader import PDEDatasetLoader_Multi
 from model_fno import FNO2d
+from model_cno import CNO2d
 from utils import save_temperature_plot
 from utils_train import save_checkpoint, load_checkpoint, now_run_id
 
@@ -130,12 +131,20 @@ with open("configs/default.yaml", "r") as f:
 
 if __name__ == "__main__":
     timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
-    fno = FNO2d(modes1=config["model"]["modes1"], 
-                modes2=config["model"]["modes2"], 
-                width=config["model"]["width"], 
-                in_channels=config["model"]["in_channels"], 
-                out_channels=config["model"]["out_channels"], 
-                pad=config["model"]["pad"]
+    # model = FNO2d(modes1=config["model_fno"]["modes1"], 
+    #             modes2=config["model_fno"]["modes2"], 
+    #             width=config["model_fno"]["width"], 
+    #             in_channels=config["model_fno"]["in_channels"], 
+    #             out_channels=config["model_fno"]["out_channels"], 
+    #             pad=config["model_fno"]["pad"]
+    #             )
+    model = CNO2d(in_dim=config["model_cno"]["in_dim"],
+                  out_dim=config["model_cno"]["out_dim"],
+                  size=config["model_cno"]["size"],
+                  N_layers=config["model_cno"]["N_layers"],
+                  N_res=config["model_cno"]["N_res"],
+                  N_res_neck=config["model_cno"]["N_res_neck"],
+                  channel_multiplier=config["model_cno"]["channel_multiplier"],
                 )
-    train(fno, should_evaluate=True)
+    train(model, should_evaluate=True)
 
