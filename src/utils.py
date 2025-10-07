@@ -1,9 +1,11 @@
-import h5py
-
-import os
-import random
 import numpy as np
+import os
+import torch
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+import imageio.v2 as iio
+import imageio_ffmpeg
+
 from datetime import datetime
 
 def _uniquify(filepath: str) -> str:
@@ -36,7 +38,7 @@ def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch
     assert temp_tensor.ndim == 2, f"Expected (H, W), got {temp_tensor.shape}"
 
     # --- Create results folder if it doesn't exist ---
-    os.makedirs("results", exist_ok=True)
+    os.makedirs(path, exist_ok=True)
     timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
 
     if epoch is not None:
@@ -60,42 +62,90 @@ def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch
     print(f"[INFO] Saved temperature plot to {filename}")
 
 
-def dump_h5_structure(path, out_path="h5_structure.txt"):
+def _to_THW(seq: torch.Tensor) -> torch.Tensor:
     """
-    Walks through an HDF5 file and writes a tree-style overview
-    (groups, datasets, shapes, dtypes, scalar values) to a text file.
-
-    Args:
-        path (str): path to your .h5 file
-        out_path (str): path where the txt overview will be saved
+    Akzeptiert (B,T,1,H,W) | (T,1,H,W) | (T,H,W) und gibt (T,H,W) (float32, cpu) zurück.
     """
-    lines = []
+    x = torch.as_tensor(seq).detach().cpu()
+    if x.ndim == 5:   # (B,T,1,H,W)
+        x = x[0, :, 0]
+    elif x.ndim == 4: # (T,1,H,W)
+        x = x[:, 0]
+    elif x.ndim == 3: # (T,H,W)
+        pass
+    else:
+        raise ValueError(f"Unexpected shape: {tuple(x.shape)}")
+    return x.float()
 
-    def _collect(name, obj):
-        indent = "  " * (name.count('/') - 1)
-        if isinstance(obj, h5py.Group):
-            lines.append(f"{indent}📁 Group: {name}/")
-        elif isinstance(obj, h5py.Dataset):
-            shape = obj.shape
-            dtype = obj.dtype
-            if shape == ():  # scalar dataset
-                val = obj[()]
-                lines.append(f"{indent}📄 Dataset: {name}  shape={shape}, dtype={dtype}, value={val}")
-            else:
-                lines.append(f"{indent}📄 Dataset: {name}  shape={shape}, dtype={dtype}")
+def animate_side_by_side_mp4(pred_seq, gt_seq, out_path, fps=8, cmap="inferno", vmin=None, vmax=None):
+    """
+    pred_seq, gt_seq: gleiche Länge/Größe, jeweils (B,T,1,H,W) | (T,1,H,W) | (T,H,W)
+    """
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    p = _to_THW(pred_seq)
+    g = _to_THW(gt_seq)
+    assert p.shape == g.shape, f"Shape mismatch: {p.shape} vs {g.shape}"
+    T, H, W = p.shape
 
-    with h5py.File(path, "r") as f:
-        lines.append(f"HDF5 Structure of: {path}\n")
-        f.visititems(_collect)
-        lines.append("\n✅ Done.\n")
+    if vmin is None: vmin = float(min(p.min(), g.min()))
+    if vmax is None: vmax = float(max(p.max(), g.max()))
 
-    with open(out_path, "w") as f_out:
-        f_out.write("\n".join(lines))
+    norm   = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+    cmap_f = mpl.cm.get_cmap(cmap)
 
-    print(f"✅ HDF5 structure written to: {out_path}")
+    with iio.get_writer(out_path, format="FFMPEG", fps=fps, codec="libx264", ffmpeg_params=["-pix_fmt", "yuv420p"]) as writer:
+        for t in range(T):
+            rgb_p = (cmap_f(norm(p[t].numpy()))[..., :3] * 255).astype(np.uint8)
+            rgb_g = (cmap_f(norm(g[t].numpy()))[..., :3] * 255).astype(np.uint8)
+            frame = np.concatenate([rgb_p, rgb_g], axis=1)  # (H, 2W, 3)
+            frame = np.ascontiguousarray(frame)
+            writer.append_data(frame)
+    return out_path
 
-# Example usage:
-# inspect_h5_file("data/pattern_paths_training_44_44.h5")
+def save_temperature_plot_sequence(temp_tensor, idx, path='results', name_prefix='temp', epoch=None):
+
+    y = temp_tensor.detach().cpu()
+    if y.ndim == 4:  # (B, 1, H, W) -> nur ein Frame
+        frames = [y[0, 0]]
+    elif y.ndim == 5:  # (B, T, 1, H, W)
+        T = y.size(1)
+        frames = [y[0, t, 0] for t in range(T)]
+    else:
+        raise ValueError(f"Unexpected target shape: {tuple(y.shape)}")
+    os.makedirs(path, exist_ok=True)
+
+    for t, frame in enumerate(frames):
+        save_temperature_plot(frame, path=path,
+                              name_prefix=f"{name_prefix}_id{idx}_t{t:03d}",
+                              epoch=epoch)
+        
+import glob, cv2
+from natsort import natsorted  # pip install natsort
+from PIL import Image
+
+# pip install imageio imageio-ffmpeg natsort pillow
+import os, glob
+from datetime import datetime
+from natsort import natsorted
+from PIL import Image
+import numpy as np
+import imageio
+
+def generate_video_from_pngs(src_dir, save_root, fps=8):
+    frames = natsorted(glob.glob(os.path.join(src_dir, "*.png")))
+    assert frames, f"No PNGs found in {src_dir}"
+
+    ts = datetime.now().strftime("%d%m%Y_%H%M%S")
+    out_dir = os.path.join(save_root, ts)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"out_{fps}fps.mp4")
+
+    with imageio.get_writer(out_path, fps=fps, codec='libx264', pixelformat='yuv420p') as writer:
+        for p in frames:
+            rgb = Image.open(p).convert("RGB")
+            writer.append_data(np.array(rgb))  # ✅ <- note: append_data()
+
+    print(f"✅ Saved to {out_path}")
 
 if __name__ == "__main__":
-    dump_h5_structure("data/pattern_paths_training_44_44.h5")
+    generate_video_from_pngs("results_val/07102025_184051", "results_video", fps=8)

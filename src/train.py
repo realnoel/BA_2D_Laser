@@ -15,10 +15,10 @@ from model_cno import CNO2d
 from utils import save_temperature_plot
 from utils_train import save_checkpoint, load_checkpoint, now_run_id
 
-def train(fno, should_evaluate=False):
+def train(model, should_evaluate=False):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    fno.to(device)
+    model.to(device)
 
     start_time = time.time()
     torch.manual_seed(config["training"]["seed"])
@@ -55,7 +55,7 @@ def train(fno, should_evaluate=False):
 
     # Initialize model, optimizer, and loss function
     # fno = FNO1d(modes=modes, width=width) # Old width is 64
-    optimizer = Adam(fno.parameters(), lr=config["optimizer"]["lr"]) # Adam is first-order gradient 
+    optimizer = Adam(model.parameters(), lr=config["optimizer"]["lr"]) # Adam is first-order gradient 
     # optimizer = torch.optim.LBFGS([x],lr=0.05) # LBFGS is quasi Newton, might be good for PDE solvers
     scheduler = StepLR(optimizer, step_size=config["optimizer"]["step_size"], gamma=config["optimizer"]["gamma"])
     l = MSELoss()
@@ -67,14 +67,16 @@ def train(fno, should_evaluate=False):
 
     for epoch in range(epochs):
         train_mse = 0.0
-        fno.train()
+        model.train()
+        if epoch == 1:
+            print(f"Training for {epochs} epochs will take approx. {(time.time() - start_time) * epochs / 60:.2f} minutes")
         for (x, y) in training_set:
             x, y = x.to(device), y.to(device)
             # Check dim inp, out batch
             if y.ndim == 3:            # (B, H, W)
                 y = y.unsqueeze(1)     # -> (B, 1, H, W)
             optimizer.zero_grad()
-            y_pred = fno(x) # Removed .squeeze(2)
+            y_pred = model(x) # Removed .squeeze(2)
             loss_f = l(y_pred, y)
             loss_f.backward()
             optimizer.step()
@@ -84,24 +86,27 @@ def train(fno, should_evaluate=False):
         scheduler.step()
 
         with torch.no_grad():
-            fno.eval()
+            model.eval()
             test_relative_l2 = 0.0
             for (x, y) in testing_set:
                 x, y = x.to(device), y.to(device)
-                y_pred = fno(x)
+                y_pred = model(x)
 
                 if y.ndim == 3:            # (B, H, W)
                     y = y.unsqueeze(1)     # -> (B, 1, H, W)
 
                 # Save prediction and ground truth of first batch element of last epoch
-                save_temperature_plot(y_pred[0, 0], path=f"results/{timestamp}",name_prefix="prediction", epoch=epoch)
-                save_temperature_plot(y[0, 0], path=f"results/{timestamp}", name_prefix="groundtruth", epoch=epoch)
+                # save_temperature_plot(y_pred[0, 0], path=f"results/{timestamp}",name_prefix="prediction", epoch=epoch)
+                # save_temperature_plot(y[0, 0], path=f"results/{timestamp}", name_prefix="groundtruth", epoch=epoch)
 
                 loss_f = (torch.mean((y_pred - y) ** 2) / torch.mean(y ** 2)) ** 0.5 * 100
                 test_relative_l2 += loss_f.item()
             test_relative_l2 /= len(testing_set)
 
-        if epoch % freq_print == 0: print("######### Epoch:", epoch, " ######### Train Loss:", train_mse, " ######### Relative L2 Test Norm:", test_relative_l2)
+        if epoch % freq_print == 0: 
+            print("######### Epoch:", f"{epoch}", " ######### Train Loss:", f"{train_mse:.4e}", \
+                   "######### Relative L2 Test Norm:", f"{test_relative_l2:.2f}%", \
+                   f"###### {time.time() - start_time:.2f}s ######")
 
         # ---- Checkpoint ----
         is_best = test_relative_l2 < best_val
@@ -109,7 +114,7 @@ def train(fno, should_evaluate=False):
             best_val = test_relative_l2
 
         save_checkpoint(
-            model=fno,
+            model=model,
             optimizer=optimizer,
             scheduler=scheduler,
             epoch=epoch,
@@ -123,8 +128,8 @@ def train(fno, should_evaluate=False):
     # Final evaluation on validation dataset
     if should_evaluate:
         end_time = time.time()
-        print("### Training time:", end_time - start_time, " ###")
-        print("### Using modes:", config["model"]["modes"], "and width:", config["model"]["width"], "with batch size:", batch_size, " ###")
+        print(f"### Training time: {end_time - start_time:.2f} ###")
+        print(f"### With batch size: {batch_size} ###")
 
 with open("configs/default.yaml", "r") as f:
     config = yaml.safe_load(f)
@@ -147,4 +152,6 @@ if __name__ == "__main__":
                   channel_multiplier=config["model_cno"]["channel_multiplier"],
                 )
     train(model, should_evaluate=True)
+
+
 

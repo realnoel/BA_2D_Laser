@@ -5,7 +5,7 @@ import yaml
 from torch.utils.data import Dataset
 
 class PDEDatasetLoader_Single(Dataset):
-    def __init__(self, which, dtype=torch.float32, s=44, N=1, seq_len=1):
+    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1):
         super().__init__()
 
         self.N = N
@@ -87,7 +87,7 @@ class PDEDatasetLoader_Single(Dataset):
         return temp_tensor, power_tensor, shift_tensor, target_tensor
 
 class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
-    def __init__(self, which, dtype=torch.float32, s=44, N=1, seq_len=1):
+    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1):
         super().__init__(which, dtype, s, N, seq_len)
 
     def __getitem__(self, idx):
