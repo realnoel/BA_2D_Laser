@@ -10,7 +10,7 @@ from torch.nn.functional import mse_loss
 # Your project imports
 from dataloader import PDEDatasetLoader_Multi
 from model_fno import FNO2d, PadCropFNO
-from utils import save_temperature_plot  # assumes the shape-robust version
+from utils_images import save_temperature_plot  # assumes the shape-robust version
 
 def parse_args():
     p = argparse.ArgumentParser(

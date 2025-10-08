@@ -87,8 +87,9 @@ class PDEDatasetLoader_Single(Dataset):
         return temp_tensor, power_tensor, shift_tensor, target_tensor
 
 class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
-    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1):
+    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1, return_sequence=False):
         super().__init__(which, dtype, s, N, seq_len)
+        self.return_sequence = return_sequence
 
     def __getitem__(self, idx):
         # Get the 4 tensors produced by the parent class
@@ -104,8 +105,12 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
         shift_c = shift.reshape(-1, self.s, self.s)                       # (2N, s, s)
 
         inp = torch.cat([temp, power_c, shift_c], dim=0)                    # (1+N+2N, s, s) = (1+3N, s, s)
-        tgt = target[-1]                                                    # last future frame -> (1, s, s)
-
+    
+        if self.return_sequence:
+            T = min(self.seq_len, self.N)
+            tgt = target[1:1+T].contiguous()      # (T,1,H,W)
+        else:
+            tgt = target[-1]                      # (1,H,W)
         return inp, tgt
     
     def get_norm(self):

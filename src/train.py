@@ -12,7 +12,7 @@ from torch.nn import MSELoss
 from dataloader import PDEDatasetLoader_Multi
 from model_fno import FNO2d
 from model_cno import CNO2d
-from utils import save_temperature_plot
+from utils_images import save_temperature_plot
 from utils_train import save_checkpoint, load_checkpoint, now_run_id
 
 def train(model, should_evaluate=False):

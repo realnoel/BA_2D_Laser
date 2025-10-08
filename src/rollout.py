@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from dataloader import PDEDatasetLoader_Multi
 from model_cno import CNO2d
-from utils import save_temperature_plot
+from utils_images import save_temperature_plot
 
 def parse_args_fno():
     p = argparse.ArgumentParser(
@@ -125,7 +125,7 @@ def rollout():
 
     # Validation dataset
     norm = PDEDatasetLoader_Multi(which="train").get_norm()
-    val_ds = PDEDatasetLoader_Multi(which="test", seq_len=args.steps, N=args.steps)
+    val_ds = PDEDatasetLoader_Multi(which="test", seq_len=args.steps, N=args.steps, return_sequence=True)
     val_ds.load_norm(norm)
 
     val_loader = DataLoader(
@@ -137,9 +137,11 @@ def rollout():
     )
 
     # --- One sample ---
-    inp, tgt = next(iter(val_loader))    # inp: (1, 1+3N, H, W)
+    inp, tgt_seq = next(iter(val_loader))    # inp: (1, 1+3N, H, W)
     inp = inp.to(device, dtype=torch.float32)
+    tgt_seq = tgt_seq.to(device, dtype=torch.float32)
     B, C_all, H, W = inp.shape
+    T_gt = tgt_seq.size(1)
     assert B == 1, f"Use batch_size=1, got {B}"
 
     # --- Decode N from channels and cross-check with args.steps ---
@@ -147,7 +149,7 @@ def rollout():
     N = (C_all - 1) // 3
     if N < args.steps:
         print(f"[WARN] dataset N={N} < steps={args.steps}; reducing steps to {N}")
-    steps = min(args.steps, N)
+    steps = min(args.steps, N, T_gt)
 
     print(f"[INFO] Channels => temp:1, power:{N}, shift:{2*N}  -> total {1+3*N}")
     print(f"[INFO] Rollout steps: {steps}")
@@ -155,7 +157,7 @@ def rollout():
     # --- Initial state (t=0) is temp channel 0 ---
     temp_t = inp[:, 0:1, ...]            # (1,1,H,W)
 
-    preds = []
+    preds, ground_truth, mse_mask = [], [], []
     model.eval()
     with torch.no_grad():
         for t in range(steps):
@@ -172,20 +174,47 @@ def rollout():
 
             # sanity check vs model expectation
             # (replace 'conv_in' if your first layer is named differently)
-            # expected_in = state.get("config", {}).get("model", {}).get("in_dim", 4)
-            # assert model_in.size(1) == expected_in
+            expected_in = state.get("config", {}).get("model", {}).get("in_dim", 4)
+            assert model_in.size(1) == expected_in
+            
+            # if tgt_seq.dim() == 3:                 # (B,H,W)
+            #     tgt_seq = tgt_seq.unsqueeze(1)         # -> (B,1,H,W)
+            # y_gt = tgt.cpu()  # (1,1,H,W)
+            # ground_truth.append(y_gt)
 
-            y_pred = model(model_in)         # (1,1,H,W)
+            # print("tgt_seq shape:", tgt_seq.shape)
+            gt_t   = tgt_seq[:, t, :, :]                 # (1,1,H,W)
+            # print("gt_t shape:", gt_t.shape)
+            if gt_t.dim() == 3:                 # (B,H,W)
+                gt_t = gt_t.unsqueeze(1)         # -> (B,1,H,W)
+            y_pred = model(model_in)                        # (1,1,H,W)
+            # print("y_pred shape:", y_pred.shape)
+            
+            ground_truth.append(gt_t.detach().cpu())
             preds.append(y_pred.detach().cpu())
+            temp_t = y_pred                        # feedback
 
-            # feedback
-            temp_t = y_pred
+            mse_mask.append((y_pred - gt_t).pow(2).detach().cpu())
+            # max_mse = mse_mask[-1].max().item()
 
             # save
             save_temperature_plot(
-                y_pred[0, 0],
-                path=f"results_val/{timestamp}",
+                preds[-1][0, 0],
+                path=f"results_val/{timestamp}_results_pred",
                 name_prefix=f"seq_prediction_step{t}"
+            )
+            save_temperature_plot(
+                ground_truth[-1][0, 0],
+                path=f"results_val/{timestamp}_results_gt",
+                name_prefix=f"seq_ground_truth_step{t}"
+            )
+            save_temperature_plot(
+                mse_mask[-1][0, 0],
+                path=f"results_val/{timestamp}_results_mse",
+                name_prefix=f"seq_mse_step{t}",
+                label="MSE",
+                scale_fix=True,
+                max_val=1.0
             )
     
     print("\nRollout complete!")

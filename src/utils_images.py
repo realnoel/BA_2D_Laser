@@ -18,7 +18,14 @@ def _uniquify(filepath: str) -> str:
         i += 1
     return candidate
 
-def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch=None):
+def save_temperature_plot(temp_tensor,
+                          path="results", 
+                          name_prefix="temp", 
+                          epoch=None, 
+                          label="Temperature (normalized)", 
+                          scale_fix=False, 
+                          max_val=None
+                          ):
     """
     Save a 2D temperature field as a .png image in ./results folder.
     
@@ -29,6 +36,9 @@ def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch
     # --- Ensure numpy array ---
     if hasattr(temp_tensor, "detach"):
         temp_tensor = temp_tensor.detach().cpu().numpy()
+    
+    # if temp_tensor.ndim == 4 and temp_tensor.shape[0] == 1:
+    #     temp_tensor = temp_tensor[0]  # (1, 1, H, W) -> (1, H, W)
 
     # If shape is (1, H, W), squeeze the channel
     if temp_tensor.ndim == 3 and temp_tensor.shape[0] == 1:
@@ -49,11 +59,17 @@ def save_temperature_plot(temp_tensor, path="results", name_prefix="temp", epoch
 
     filename = _uniquify(filename)
 
+    # --- Determine color scale if fixed ---
+    vmin, vmax = None, None
+    if scale_fix:
+        vmin = 0.0
+        vmax = max_val if max_val is not None else 1.0
+
 
     # --- Plot ---
     plt.figure(figsize=(5, 4))
-    im = plt.imshow(temp_tensor, cmap="inferno", origin="lower")
-    plt.colorbar(im, label="Temperature (normalized)")
+    im = plt.imshow(temp_tensor, cmap="inferno", origin="lower", vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label=label)
     plt.title(f"{name_prefix} @ {timestamp}")
     plt.tight_layout()
     plt.savefig(filename, dpi=150)
@@ -118,34 +134,4 @@ def save_temperature_plot_sequence(temp_tensor, idx, path='results', name_prefix
         save_temperature_plot(frame, path=path,
                               name_prefix=f"{name_prefix}_id{idx}_t{t:03d}",
                               epoch=epoch)
-        
-import glob, cv2
-from natsort import natsorted  # pip install natsort
-from PIL import Image
-
-# pip install imageio imageio-ffmpeg natsort pillow
-import os, glob
-from datetime import datetime
-from natsort import natsorted
-from PIL import Image
-import numpy as np
-import imageio
-
-def generate_video_from_pngs(src_dir, save_root, fps=8):
-    frames = natsorted(glob.glob(os.path.join(src_dir, "*.png")))
-    assert frames, f"No PNGs found in {src_dir}"
-
-    ts = datetime.now().strftime("%d%m%Y_%H%M%S")
-    out_dir = os.path.join(save_root, ts)
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"out_{fps}fps.mp4")
-
-    with imageio.get_writer(out_path, fps=fps, codec='libx264', pixelformat='yuv420p') as writer:
-        for p in frames:
-            rgb = Image.open(p).convert("RGB")
-            writer.append_data(np.array(rgb))  # ✅ <- note: append_data()
-
-    print(f"✅ Saved to {out_path}")
-
-if __name__ == "__main__":
-    generate_video_from_pngs("results_val/07102025_184051", "results_video", fps=8)
+    
