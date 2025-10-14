@@ -5,7 +5,7 @@ import yaml
 from torch.utils.data import Dataset
 
 class PDEDatasetLoader_Single(Dataset):
-    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1):
+    def __init__(self, which="train", dtype=torch.float32, s=44, N=1, seq_len=1):
         super().__init__()
 
         self.N = N
@@ -17,9 +17,9 @@ class PDEDatasetLoader_Single(Dataset):
             self.config = yaml.safe_load(f)
 
         if which == "train":
-            self.reader = h5py.File(f"./{self.config['dataset']['train_file']}", 'r')
+            self.reader = h5py.File(f"./data/{self.config['dataset']['train_file']}", 'r')
         elif which == "test":
-            self.reader = h5py.File(f"./{self.config['dataset']['test_file']}", 'r')
+            self.reader = h5py.File(f"./data/{self.config['dataset']['test_file']}", 'r')
 
         self.min_p = self.reader['min_q'][()]
         self.max_p = self.reader['max_q'][()]
@@ -87,7 +87,7 @@ class PDEDatasetLoader_Single(Dataset):
         return temp_tensor, power_tensor, shift_tensor, target_tensor
 
 class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
-    def __init__(self, which, dtype=torch.float64, s=44, N=1, seq_len=1, return_sequence=False):
+    def __init__(self, which, dtype=torch.float32, s=44, N=1, seq_len=1, return_sequence=False):
         super().__init__(which, dtype, s, N, seq_len)
         self.return_sequence = return_sequence
 

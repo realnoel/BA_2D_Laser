@@ -1,8 +1,8 @@
 # config.yaml
 training:
   batch_size: 16
-  epochs: 50
-  seed: 0
+  epochs: 10
+  seed: 1
   test_split: 0.2
 
 model_fno:
@@ -28,8 +28,9 @@ optimizer:
   gamma: 0.5
 
 dataset:
-  test_file: "data/pattern_paths_test_44_44.h5"
-  train_file: "data/pattern_paths_training_44_44.h5"
+  dir: "data"
+  test_file: "pattern_paths_test_44_44.h5"
+  train_file: "pattern_paths_training_44_44.h5"
 
 save:
   results_path: "results/"

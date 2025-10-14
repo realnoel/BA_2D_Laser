@@ -66,3 +66,22 @@ def load_checkpoint(model, ckpt_path, optimizer=None, scheduler=None, map_locati
         state.get("norm", None),
         state.get("run_id", None),
     )
+
+def mse_evalute_avg(y_pred: torch.Tensor, y_true: torch.Tensor):
+    """
+    Compute Mean Squared Error (MSE) between predicted and true tensors.
+    """
+    y_pred = torch.stack(y_pred, dim=0)
+    y_true = torch.stack(y_true, dim=0)
+    assert y_pred.shape == y_true.shape, "Shape mismatch between y_pred and y_true"
+    mse = 0
+    for y_pred, y_true in zip(y_pred, y_true):
+        mse += torch.mean((y_pred - y_true) ** 2).item()
+    return mse / len(y_pred)
+
+def relative_l2_percent(y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    # handles your unsqueeze convention (B,H,W) -> (B,1,H,W)
+    y_pred = torch.stack(y_pred, dim=0)
+    y_true = torch.stack(y_true, dim=0)
+    # Relative L2 as you did: sqrt(mean((y_hat - y)^2)/mean(y^2)) * 100
+    return (torch.mean((y_pred - y_true) ** 2) / torch.mean(y_true ** 2)).sqrt() * 100.0
