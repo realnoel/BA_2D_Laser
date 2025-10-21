@@ -2,6 +2,7 @@
 import pytorch_lightning as L
 import torch
 import yaml
+import os
 
 from torch import nn
 from torch.utils.data import DataLoader, random_split
@@ -142,7 +143,7 @@ if __name__ == "__main__":
     
     # torch.set_float32_matmul_precision('high') #('medium' | 'high')
 
-    print(torch.cuda.get_device_name())
+    # print(torch.cuda.get_device_name())
 
     L.seed_everything(config["training"]["seed"], workers=True)
 
@@ -186,15 +187,26 @@ if __name__ == "__main__":
     lr_cb = LearningRateMonitor(logging_interval="epoch")
     logger = CSVLogger(save_dir=str(outdir), name="logs")
 
-    trainer = L.Trainer(
-        max_epochs=config["training"]["epochs"],
-        accelerator="gpu",
-        devices="auto",
-        # precision="16-mixed" if torch.cuda.is_available() else "32-true",
-        logger=logger,
-        callbacks=[ckpt_cb, lr_cb],
-        log_every_n_steps=10
-    )
+    if torch.cuda.is_available():
+        print(f"[INFO] Using GPU: {torch.cuda.get_device_name()}")
+        trainer = L.Trainer(
+            max_epochs=config["training"]["epochs"],
+            accelerator="gpu",
+            devices="auto",
+            # precision="16-mixed" if torch.cuda.is_available() else "32-true",
+            logger=logger,
+            callbacks=[ckpt_cb, lr_cb],
+            log_every_n_steps=10
+        )
+    else:
+        print("[INFO] Using CPU")
+        trainer = L.Trainer(
+            max_epochs=config["training"]["epochs"],
+            accelerator="cpu",
+            logger=logger,
+            callbacks=[ckpt_cb, lr_cb],
+            log_every_n_steps=10
+        )
 
     trainer.fit(lit_model, datamodule=datamodule)
 
