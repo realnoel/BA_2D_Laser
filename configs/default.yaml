@@ -1,16 +1,20 @@
 # config.yaml
 training:
   batch_size: 16
-  epochs: 10
-  seed: 1
+  epochs: 500
+  seed: 0
   test_split: 0.2
+  N: 2
+  model: "FNO"                      # Valid models "CNO" and "FNO"
+  optimizer: "optimizer_adam"      # Save name of optimizer as it's dictionary is named in this file
+  scheduler: "scheduler_steplr"     # Save name of scheduler as it's dictionary is named in this file
 
 model_fno:
   modes1: 24
   modes2: 24
   width: 16
-  in_channels: 4
-  out_channels: 1
+  in_dim: 4
+  out_dim: 1
   pad: 8
 
 model_cno:
@@ -22,10 +26,21 @@ model_cno:
   N_res_neck: 4
   channel_multiplier: 16
 
-optimizer:
+optimizer_adam:
+  optimizer: "torch.optim.Adam"
   lr: 0.001
+
+optimizer_adamw:
+  optimizer: "torch.optim.AdamW"
+  lr: 0.001
+
+scheduler_steplr:
+  scheduler: "torch.optim.lr_scheduler.StepLR"
   step_size: 20
   gamma: 0.5
+
+scheduler_cosineannealinglr:
+  scheduler: "torch.optim.lr_scheduler.CosineAnnealingLR"
 
 dataset:
   dir: "data"

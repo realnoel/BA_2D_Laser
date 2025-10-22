@@ -6,8 +6,8 @@ import os
 
 from torch import nn
 from torch.utils.data import DataLoader, random_split
-from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from datetime import datetime
 from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -21,6 +21,8 @@ from model_cno import CNO2d
 # ---------- Helpers ----------
 def relative_l2_percent(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     # handles your unsqueeze convention (B,H,W) -> (B,1,H,W)
+    # print(f"relative_l2_percent: y_hat dim: {y_hat.ndim}, y_hat shape: {y_hat.shape}")
+    # print(f"relative_l2_percent: y dim: {y.ndim}, y shape: {y.shape}")
     if y.ndim == 3:  # (B,H,W)
         y = y.unsqueeze(1)
     if y_hat.ndim == 3:
@@ -48,11 +50,14 @@ class LitModel(L.LightningModule):
             raise ValueError(f"Unknown use_model={use_model!r}")
 
         # keep ckpt small but self-contained
+        opt_key = self.config["training"]["optimizer"]      # optimizer name from default.yaml
+        sch_key = self.config["training"]["scheduler"]      # scheduler name from default.yaml
         self.save_hyperparameters({
             "model_name":  model_name,     # "CNO" or "FNO"
             "model_cfg":   model_cfg,      # ONLY the chosen sub-config
-            "optimizer":   config.get("optimizer", {}),
-            "training":    config.get("training", {})
+            "optimizer":   self.config.get(opt_key, {}), 
+            "scheduler":   self.config.get(sch_key, {}),
+            "training":    self.config.get("training", {})
         })
 
     def forward(self, x):
@@ -60,7 +65,12 @@ class LitModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
+        # print(f"y dim: {y.ndim}, x dim: {x.ndim}")
+        # print(f"y shape: {y.shape}, x shape: {x.shape}")
         y_hat = self(x)
+        # print(f"y_hat dim: {y_hat.ndim}")
+        # print(f"y_hat shape: {y_hat.shape}")
+        assert y_hat.shape == y.shape, f"pred {y_hat.shape} vs tgt {y.shape}" # Sanity check
         # print(next(self.model.parameters()).device)
         # print(x.device)
         # unify dims like in your loop
@@ -78,14 +88,33 @@ class LitModel(L.LightningModule):
         return {"val_rel_l2_percent": rel}
 
     def configure_optimizers(self):
-        opt_conf = self.config["optimizer"]
-        optimizer = Adam(self.parameters(), lr=opt_conf["lr"])
-        scheduler = StepLR(
-            optimizer,
-            step_size=opt_conf["step_size"],
-            gamma=opt_conf["gamma"]
-        )
-        return {
+        opt_key = self.config["training"]["optimizer"]      # optimizer name from default.yaml
+        sch_key = self.config["training"]["scheduler"]      # scheduler name from default.yaml
+        opt_conf = self.config[opt_key]                     # hyperparameter of optimizer from default.yaml
+        sch_conf = self.config[sch_key]                     # hyperparameter of scheduler from default.yaml
+        
+        if self.config['training']['optimizer'] == "optimizer_adam":
+            optimizer = Adam(self.parameters(), lr=opt_conf["lr"])
+        elif self.config['training']['optimizer'] == "optimizer_adamw":
+            optimizer = AdamW(self.parameters(), lr=opt_conf["lr"])
+        else:
+            ValueError(f"Optimizer not installed {self.config['training']['optimizer']}")
+
+        if self.config['training']['scheduler'] == "scheduler_cosineannealinglr":
+            scheduler = CosineAnnealingLR(
+                optimizer,
+                T_max = self.config['training']['epochs'],
+            )
+        elif self.config['training']['scheduler'] == "scheduler_steplr":
+            scheduler = StepLR(
+                optimizer,
+                step_size=sch_conf["step_size"],
+                gamma=sch_conf["gamma"]
+            )
+        else:
+            ValueError(f"Scheduler not installed {self.config['training']['scheduler']}")
+
+        return { # For ReduceLROnPlateau, you must include "monitor": "<metric_name>" and set "reduce_on_plateau": True if you use the older tuple form.
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
@@ -107,7 +136,7 @@ class PDEDataModule(L.LightningDataModule):
         self.val_ds = None
 
     def setup(self, stage=None):
-        full_ds = PDEDatasetLoader_Multi(which="train")
+        full_ds = PDEDatasetLoader_Multi(which="train", N=self.config["training"]["N"], seq_len = self.config["training"]["N"], return_sequence = True)
         n_total = len(full_ds)
         n_val = int(self.config["training"]["test_split"] * n_total)
         n_train = n_total - n_val
@@ -148,17 +177,29 @@ if __name__ == "__main__":
     L.seed_everything(config["training"]["seed"], workers=True)
 
     # pick model (CNO default, switch to FNO by uncommenting)
-    use_model = "CNO"
+    N = config["training"]["N"]
+    IN_DIM = 1 + 3 * N   # 1 current temp + N power + 2N shift
+    OUT_DIM = N
+
+    use_model = config["training"]["model"]
     if use_model == "FNO":
+        if config["model_fno"]["in_dim"] != IN_DIM:
+            config["model_fno"]["in_dim"] = IN_DIM
+        if config["model_fno"]["out_dim"] != OUT_DIM:
+            config["model_fno"]["out_dim"] = OUT_DIM
         model_core = FNO2d(
             modes1=config["model_fno"]["modes1"],
             modes2=config["model_fno"]["modes2"],
             width=config["model_fno"]["width"],
-            in_channels=config["model_fno"]["in_channels"],
-            out_channels=config["model_fno"]["out_channels"],
+            in_channels=config["model_fno"]["in_dim"],
+            out_channels=config["model_fno"]["out_dim"],
             pad=config["model_fno"]["pad"]
         )
     elif use_model == "CNO":
+        if config["model_cno"]["in_dim"] != IN_DIM:
+            config["model_cno"]["in_dim"] = IN_DIM
+        if config["model_cno"]["out_dim"] != OUT_DIM:
+            config["model_cno"]["out_dim"] = OUT_DIM
         model_core = CNO2d(
             in_dim=config["model_cno"]["in_dim"],
             out_dim=config["model_cno"]["out_dim"],
@@ -205,7 +246,8 @@ if __name__ == "__main__":
             accelerator="cpu",
             logger=logger,
             callbacks=[ckpt_cb, lr_cb],
-            log_every_n_steps=10
+            log_every_n_steps=10,
+            
         )
 
     trainer.fit(lit_model, datamodule=datamodule)
