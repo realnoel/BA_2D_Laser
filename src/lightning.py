@@ -68,14 +68,14 @@ class LitModel(L.LightningModule):
         # print(f"y dim: {y.ndim}, x dim: {x.ndim}")
         # print(f"y shape: {y.shape}, x shape: {x.shape}")
         y_hat = self(x)
+        if y.ndim == 3:
+            y = y.unsqueeze(1)
         # print(f"y_hat dim: {y_hat.ndim}")
         # print(f"y_hat shape: {y_hat.shape}")
         assert y_hat.shape == y.shape, f"pred {y_hat.shape} vs tgt {y.shape}" # Sanity check
         # print(next(self.model.parameters()).device)
         # print(x.device)
         # unify dims like in your loop
-        if y.ndim == 3:
-            y = y.unsqueeze(1)
         loss = self.criterion(y_hat, y)
         self.log("train_mse", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
@@ -96,7 +96,7 @@ class LitModel(L.LightningModule):
         if self.config['training']['optimizer'] == "optimizer_adam":
             optimizer = Adam(self.parameters(), lr=opt_conf["lr"])
         elif self.config['training']['optimizer'] == "optimizer_adamw":
-            optimizer = AdamW(self.parameters(), lr=opt_conf["lr"])
+            optimizer = AdamW(self.parameters(), lr=opt_conf["lr"], weight_decay=opt_conf['weight_decay'])
         else:
             ValueError(f"Optimizer not installed {self.config['training']['optimizer']}")
 
@@ -136,7 +136,7 @@ class PDEDataModule(L.LightningDataModule):
         self.val_ds = None
 
     def setup(self, stage=None):
-        full_ds = PDEDatasetLoader_Multi(which="train", N=self.config["training"]["N"], seq_len = self.config["training"]["N"], return_sequence = True)
+        full_ds = PDEDatasetLoader_Multi(which="train", N=self.config["training"]["N"], K=1)
         n_total = len(full_ds)
         n_val = int(self.config["training"]["test_split"] * n_total)
         n_train = n_total - n_val
@@ -169,17 +169,13 @@ class PDEDataModule(L.LightningDataModule):
 if __name__ == "__main__":
     with open("configs/default.yaml", "r") as f:
         config = yaml.safe_load(f)
-    
-    # torch.set_float32_matmul_precision('high') #('medium' | 'high')
-
-    # print(torch.cuda.get_device_name())
 
     L.seed_everything(config["training"]["seed"], workers=True)
 
     # pick model (CNO default, switch to FNO by uncommenting)
     N = config["training"]["N"]
-    IN_DIM = 1 + 3 * N   # 1 current temp + N power + 2N shift
-    OUT_DIM = N
+    IN_DIM = 4 * N 
+    OUT_DIM = 1
 
     use_model = config["training"]["model"]
     if use_model == "FNO":
@@ -191,8 +187,8 @@ if __name__ == "__main__":
             modes1=config["model_fno"]["modes1"],
             modes2=config["model_fno"]["modes2"],
             width=config["model_fno"]["width"],
-            in_channels=config["model_fno"]["in_dim"],
-            out_channels=config["model_fno"]["out_dim"],
+            in_dim=config["model_fno"]["in_dim"],
+            out_dim=config["model_fno"]["out_dim"],
             pad=config["model_fno"]["pad"]
         )
     elif use_model == "CNO":
