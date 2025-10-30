@@ -30,6 +30,28 @@ def relative_l2_percent(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     # Relative L2 as you did: sqrt(mean((y_hat - y)^2)/mean(y^2)) * 100
     return (torch.mean((y_hat - y) ** 2) / torch.mean(y ** 2)).sqrt() * 100.0
 
+def mse_evaluate_avg(Yp: torch.Tensor, Yt: torch.Tensor):
+    """
+    Compute Mean Squared Error (MSE) between predicted and true tensors.
+    """
+    if Yt.ndim == 3:  # (B,H,W)
+        Yt = Yt.unsqueeze(1)
+    if Yp.ndim == 3:
+        Yp = Yp.unsqueeze(1)
+
+    # Mean Squared Error
+    return torch.mean((Yp - Yt) ** 2).item()  # true average over all dims
+
+def relative_l1_percent(Yp: torch.Tensor, Yt: torch.Tensor) -> torch.Tensor:
+    """Compute Relative L1 (%) between predicted and true tensors."""
+    if Yt.ndim == 3:  # (B,H,W)
+        Yt = Yt.unsqueeze(1)
+    if Yp.ndim == 3:
+        Yp = Yp.unsqueeze(1)
+
+    # Relative L1 as you did: mean(|y_hat - y|)/mean(|y|) * 100
+    return (torch.mean(torch.abs(Yp - Yt)) / torch.mean(torch.abs(Yt))) * 100.0
+
 # ---------- LightningModule ----------
 class LitModel(L.LightningModule):
     def __init__(self, model: nn.Module, config: dict, use_model: str):
@@ -83,9 +105,13 @@ class LitModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self(x)
-        rel = relative_l2_percent(y_hat, y)
-        self.log("val_rel_l2_percent", rel, on_step=False, on_epoch=True, prog_bar=True)
-        return {"val_rel_l2_percent": rel}
+        rell2 = relative_l2_percent(y_hat, y)
+        mse = mse_evaluate_avg(y_hat, y)
+        rell1 = relative_l1_percent(y_hat, y)
+        self.log("val_mse", mse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_rel_l1_percent", rell1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_rel_l2_percent", rell2, on_step=False, on_epoch=True, prog_bar=True)
+        return {"val_rel_l2_percent": rell2}
 
     def configure_optimizers(self):
         opt_key = self.config["training"]["optimizer"]      # optimizer name from default.yaml
@@ -174,8 +200,9 @@ if __name__ == "__main__":
 
     # pick model (CNO default, switch to FNO by uncommenting)
     N = config["training"]["N"]
-    IN_DIM = 4 * N 
-    OUT_DIM = 1
+    assert N >= 1, "N must be at least 1"
+    IN_DIM = 4 * N + 3
+    OUT_DIM = N
 
     use_model = config["training"]["model"]
     if use_model == "FNO":

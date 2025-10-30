@@ -2,6 +2,12 @@
 # WRITE HERE HOW TO RUN ROLLOUT WITH --ckpt which file etc.
 #
 
+#
+# Was soll das Programm können:
+# - Verschiedene Sequenz IDX auswählen können
+# - Sequenlänge bestimmen, mit --steps -1 für volle Länge
+#
+
 import torch, os, glob, argparse, yaml
 
 from datetime import datetime
@@ -10,8 +16,8 @@ from torch.utils.data import DataLoader
 from dataloader import PDEDatasetLoader_Multi
 from model_cno import CNO2d
 from model_fno import FNO2d
-from utils_images import save_temperature_plot
-from utils_train import mse_evalute_avg, relative_l2_percent
+from utils_images import save_temperature_plot, plot_error
+from utils_train import mse_evaluate_avg, relative_l2_percent, relative_l1_percent
 
 # -----------------------------
 # Argument parser
@@ -22,7 +28,7 @@ def parse_args():
     )
     p.add_argument("--ckpt", required=True, help="Path to checkpoint directory")
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="Device selection")
-    p.add_argument("--steps", type=int, default=1, help="Number of rollout steps")
+    p.add_argument("--steps", type=int, default=-1, help="Number of rollout steps")
     p.add_argument("--yaml", default="configs/default.yaml")
     p.add_argument("--idx", type=int, default=0, help="Which sequence index to use from the test set (default: 0)")
     return p.parse_args()
@@ -131,103 +137,135 @@ def rollout():
     model     = load_weights_into_model(model, ckpt_file, device)
 
     # Validation dataset
+    N = hparams.get("training", {}).get("N", 1)
+    print(args.steps, N)
+    assert args.steps > 0, "Rollout steps must be positive"
     norm = PDEDatasetLoader_Multi(which="train").get_norm()
-    val_ds = PDEDatasetLoader_Multi(which="test", seq_len=args.steps, N=args.steps, return_sequence=True)
+    val_ds = PDEDatasetLoader_Multi(which="test", 
+                                    N=N,
+                                    K=args.steps
+    )
     val_ds.load_norm(norm)
 
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=1,           # one sequence per batch
-        shuffle=False,          # keep file/index order
-        num_workers=0           # keep strict order + HDF5 safety
-    )
+    norm = {
+        "min_p": norm[0],
+        "max_p": norm[1],
+        "min_shift": norm[2],
+        "max_shift": norm[3],
+        "min_model": norm[4],
+        "max_model": norm[5]
+    }
 
-    # --- One sample ---
-    inp, tgt_seq = next(iter(val_loader))    # inp: (1, 1+3N, H, W)
-    inp = inp.to(device, dtype=torch.float32)
-    tgt_seq = tgt_seq.to(device, dtype=torch.float32)
-    B, C_all, H, W = inp.shape
-    T_gt = tgt_seq.size(1)
+    # val_loader = DataLoader(
+    #     val_ds,
+    #     batch_size=1,           # one sequence per batch     # SOLLTE DIESER WERT NICHT N SEIN???? DAMIT INP = OUT = N IST????????
+    #     shuffle=False,          # keep file/index order
+    #     num_workers=0           # keep strict order + HDF5 safety
+    # )
+
+    # --- One specific sequence (use --idx) ---
+    seq_inp, seq_tgt = val_ds[args.idx]                         # seq_inp: (K, 4N+3, H, W), seq_tgt: (K, N, H, W)
+    inp = seq_inp.unsqueeze(0).to(device, dtype=torch.float32)  # inp: (1, K, 4N+3, H, W)  per time-step: [N temp | N power | 2N shift]
+    tgt = seq_tgt.unsqueeze(0).to(device, dtype=torch.float32)  # tgt: (1, K, N, H, W)  target for each step
+
+    # Sanity check
+    print(f"Input shape: {inp.shape}, Target sequence shape: {tgt.shape}")
+    B, T, C, H, W = tgt.shape
+    assert C == N, f"Expected {N} channels in target, got {C}"
+    B, T, C, H, W = inp.shape
+    assert C == 4*N+3, f"Expected {4*N+3} channels per step, got {C}"
     assert B == 1, f"Use batch_size=1, got {B}"
+    
+    # decide rollout length
+    steps = T if args.steps < 0 else min(args.steps, T)
 
-    # --- Decode N from channels and cross-check with args.steps ---
-    assert (C_all - 1) % 3 == 0, f"Channels don't fit 1+3N pattern: C_all={C_all}"
-    N = (C_all - 1) // 3
-    if N < args.steps:
-        print(f"[WARN] dataset N={N} < steps={args.steps}; reducing steps to {N}")
-    steps = min(args.steps, N, T_gt)
-
-    print(f"[INFO] Channels => temp:1, power:{N}, shift:{2*N}  -> total {1+3*N}")
+    print(f"[INFO] Channels => temp:{N}, power:{N}, shift:{2*N}  -> total {4*N}")
     print(f"[INFO] Rollout steps: {steps}")
 
-    # --- Initial state (t=0) is temp channel 0 ---
-    temp_t = inp[:, 0:1, ...]            # (1,1,H,W)
+    # --- Initial state (t=0 .. t=N): temp-channel aus inp nehmen ---
+    temp_stack = inp[:, 0, 0:N, ...].contiguous()               # (B, N, H, W)
 
-    preds, ground_truth, mse_mask = [], [], []
+    preds, ground_truth, mse_mask, rel_l2, rel_l1, mse_error = [], [], [], [], [], []
     model.eval()
     with torch.no_grad():
         for t in range(steps):
-            # channel layout:
-            # power_t index:      1 + t
-            # shift_x_t index:    1 + N + 2*t
-            # shift_y_t index:    1 + N + 2*t + 1
-            power_t   = inp[:, 1 + t : 1 + t + 1, ...]              # (1,1,H,W)
-            shift_x_t = inp[:, 1 + N + 2*t : 1 + N + 2*t + 1, ...]  # (1,1,H,W)
-            shift_y_t = inp[:, 1 + N + 2*t + 1 : 1 + N + 2*t + 2, ...]  # (1,1,H,W)
+            # Prepare model input for this step
+            exog_t = inp[:, t, N:4*N+3, ...].contiguous()       # (B, 3N+3, H, W)
 
-            exog_t = torch.cat([power_t, shift_x_t, shift_y_t], dim=1)   # (1,3,H,W)
-            model_in = torch.cat([temp_t, exog_t], dim=1)                # (1,4,H,W)
+            # Combine temp_stack + exog_t
+            model_in = torch.cat([temp_stack, exog_t], dim=1)   # (B, 4N+3, H, W)
 
-            # sanity check vs model expectation
-            # (replace 'conv_in' if your first layer is named differently)
-            # expected_in = state.get("config", {}).get("model", {}).get("in_dim", 4)
-            expected_in = hparams.get("model_cfg", {}).get("in_dim", 4)
-            assert model_in.size(1) == expected_in
-            
-            # if tgt_seq.dim() == 3:                 # (B,H,W)
-            #     tgt_seq = tgt_seq.unsqueeze(1)         # -> (B,1,H,W)
-            # y_gt = tgt.cpu()  # (1,1,H,W)
-            # ground_truth.append(y_gt)
+            # sanity check
+            expected_in = hparams.get("model_cfg", {}).get("in_dim", 4*N+3)
+            assert model_in.size(1) == expected_in, f"in_dim mismatch: {model_in.size(1)} vs {expected_in}"
 
-            # print("tgt_seq shape:", tgt_seq.shape)
-            gt_t   = tgt_seq[:, t, :, :]                 # (1,1,H,W)
-            # print("gt_t shape:", gt_t.shape)
-            if gt_t.dim() == 3:                 # (B,H,W)
-                gt_t = gt_t.unsqueeze(1)         # -> (B,1,H,W)
-            y_pred = model(model_in)                        # (1,1,H,W)
-            # print("y_pred shape:", y_pred.shape)
-            
+            # Ground truth at this step
+            gt_t = tgt[:, t:t+N, ...]                           # (B, N, H, W)
+
+            # ---- Shape-Normalisation -> (B,1,H,W) ----
+            if gt_t.dim() == 3:                  # (B,H,W)
+                gt_t = gt_t.unsqueeze(1)         # -> (B,1,H,W) 
+            elif gt_t.dim() == 5:                # (B,?,1,H,W)
+                gt_t = gt_t[:, 0, ...]           # 
+                if gt_t.dim() == 3:              # (B,H,W)
+                    gt_t = gt_t.unsqueeze(1)     # -> (B,1,H,W)
+            elif gt_t.dim() == 2:                # (H,W)
+                gt_t = gt_t.unsqueeze(0).unsqueeze(0)  # -> (1,1,H,W)
+
+            # Prediction
+            y_pred = model(model_in)    # (B,N,H,W)
+            # y_pred = (y_pred - norm["min_model"]) / (norm["max_model"] - norm["min_model"]) # normalize
+            # y_pred_vis = y_pred * (norm["max_model"] - norm["min_model"]) + norm["min_model"] # denormalize
+
+            if y_pred.dim() == 3:
+                y_pred = y_pred.unsqueeze(1)
+
+            # Log & autoregressive feedback
             ground_truth.append(gt_t.detach().cpu())
             preds.append(y_pred.detach().cpu())
-            temp_t = y_pred                        # feedback
+            # print(f"y_preds[{t}] shape: {y_pred.shape}, gt_t shape: {gt_t.shape}")
+
+            # Update temp_stack for next step
+            temp_stack = y_pred  # (B, N, H, W)
 
             mse_mask.append((y_pred - gt_t).pow(2).detach().cpu())
-            # max_mse = mse_mask[-1].max().item()
+            rel_l2.append((relative_l2_percent(y_pred, gt_t), t))
+            rel_l1.append((relative_l1_percent(y_pred, gt_t), t))
+            mse_error.append((torch.mean((y_pred - gt_t) ** 2).item(), t))
 
-            # save
-            save_temperature_plot(
-                preds[-1][0, 0],
-                path=f"results_val/{timestamp}/results_pred",
-                name_prefix=f"seq_prediction_step{t}"
-            )
-            save_temperature_plot(
-                ground_truth[-1][0, 0],
-                path=f"results_val/{timestamp}/results_gt",
-                name_prefix=f"seq_ground_truth_step{t}"
-            )
-            save_temperature_plot(
-                mse_mask[-1][0, 0],
-                path=f"results_val/{timestamp}/results_mse",
-                name_prefix=f"seq_mse_step{t}",
-                label="MSE",
-                scale_fix=True,
-                max_val=1.0
-            )
+    
+    # Save
+    for t in range(len(preds)):
+        save_temperature_plot(
+            preds[t][0, 0],
+            path=f"results_val/{timestamp}/results_pred",
+            name_prefix=f"seq_prediction_step{t} - {args.ckpt}"
+        )
+    for t in range(len(ground_truth)):
+        save_temperature_plot(
+            ground_truth[t][0, 0],
+            path=f"results_val/{timestamp}/results_gt",
+            name_prefix=f"seq_ground_truth_step{t} - {args.ckpt}"
+        )
+    for t in range(len(mse_mask)):
+        save_temperature_plot(
+            mse_mask[t][0, 0],
+            path=f"results_val/{timestamp}/results_mse",
+            name_prefix=f"seq_mse_step{t} - {args.ckpt}",
+            label="MSE",
+            scale_fix=True
+            #max_val=1.0
+        )
 
-    print(f"Average MSE: {mse_evalute_avg(preds, ground_truth):.4e}")
+    plot_error(rel_l2, f"results_val/{timestamp}", filename="rel_l2.png", title=f"Rel. L2 - {args.ckpt}", y_axis="Rel. L2 [%]", x_axis="Step t")
+    plot_error(rel_l1, f"results_val/{timestamp}", filename="rel_l1.png", title=f"Rel. L1 - {args.ckpt}", y_axis="Rel. L1 [%]", x_axis="Step t")
+    plot_error(mse_error, f"results_val/{timestamp}", filename="mse.png", title=f"MSE - {args.ckpt}", y_axis="MSE", x_axis="Step t")
+
+    print(f"Average MSE: {mse_evaluate_avg(preds, ground_truth):.4e}")
     print(f"Average Rel-L2: {relative_l2_percent(preds, ground_truth):.4f}%")
+    print(f"Average Rel-L1: {relative_l1_percent(preds, ground_truth):.4f}%")
     print("\nRollout complete!")
-    print(f"Total steps predicted: {len(preds)}")
+    print(f"Total steps predicted: {len(preds)*N}")
 
 
 if __name__ == "__main__":

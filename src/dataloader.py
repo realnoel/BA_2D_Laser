@@ -50,18 +50,14 @@ class PDEDatasetLoader_Single(Dataset):
         traj_name, base_idx = self.index_map[idx]
 
         temp_bundle = []
+        target_bundle = []
         power_bundle = []
         shift_bundle = []
 
         # --- Past N controls: t = base_idx-N ... base_idx-1 ---
-        for i in range(self.N):
+        for i in range(self.N + 1):
             t = base_idx - self.N + i
             sample_idx = f"sample_{t}"
-
-            # --- Temperature ---
-            temp = torch.from_numpy(self.reader[traj_name][sample_idx]["output"][:]).float().reshape(self.s, self.s, 1)
-            temp = (temp - self.min_model) / (self.max_model - self.min_model)
-            temp_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
 
             # --- Power ---
             input_p = torch.from_numpy(self.reader[traj_name][sample_idx]["input_p"][:]) \
@@ -72,73 +68,92 @@ class PDEDatasetLoader_Single(Dataset):
             # --- Shift/Direction (2 channels) ---
             dx = torch.from_numpy(self.reader[traj_name][sample_idx]["dx"][:]).float().squeeze(0)
             dx = (dx - self.min_shift) / (self.max_shift - self.min_shift)
-
             shift_bundle.append(dx.permute(2, 0, 1))       # (2, H, W)
+        
+        for i in range(self.N):
+            sample_idx_past   = f"sample_{base_idx - self.N + i}"
+            sample_idx_future = f"sample_{base_idx + i}"
 
-        # --- Future N temperatures: --- Next-step target at (t+1): (1,H,W)
-        sname_next = f"sample_{base_idx + 1}"
-        tgt = torch.from_numpy(self.reader[traj_name][sname_next]["output"][:]).float().reshape(self.s, self.s, 1)
-        tgt = (tgt - self.min_model) / (self.max_model - self.min_model)
-        target_next = tgt.permute(2, 0, 1)
+            # --- Temperature ---
+            temp = torch.from_numpy(self.reader[traj_name][sample_idx_past]["output"][:]).float().reshape(self.s, self.s, 1)
+            temp = (temp - self.min_model) / (self.max_model - self.min_model)
+            temp_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
 
-        temp_tensor = torch.cat(temp_bundle, dim=0)
-        power_tensor = torch.cat(power_bundle, dim=0)
-        shift_tensor = torch.stack(shift_bundle, dim=0)
+            temp = torch.from_numpy(self.reader[traj_name][sample_idx_future]["output"][:]).float().reshape(self.s, self.s, 1)
+            temp = (temp - self.min_model) / (self.max_model - self.min_model)
+            target_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
+
+        temp_tensor   = torch.cat(temp_bundle, dim=0)     # (N,H,W)
+        target_tensor = torch.cat(target_bundle, dim=0)   # (N,H,W)
+        power_tensor  = torch.stack(power_bundle, dim=0)  # (N+1,1,H,W)
+        shift_tensor  = torch.stack(shift_bundle, dim=0)  # (N+1,2,H,W)
 
         # print(f"Dataset __getitem__ idx={idx}: temp shape: {temp_tensor.shape}, power shape: {power_tensor.shape}, shift shape: {shift_tensor.shape}, target shape: {target_tensor.shape}")
 
-        return temp_tensor, power_tensor, shift_tensor, target_next
+        return temp_tensor, power_tensor, shift_tensor, target_tensor
 
 class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
     def __init__(self, which, dtype=torch.float32, s=44, N=1, K=1):
         super().__init__(which, dtype, s, N)
         self.K = K
+        self.N = N 
     
     def __getitem__(self, idx):
         """
         Returns a sequence of length self.K.
-        Each time step packs N exogenous frames -> inp_t: (4N,H,W), tgt_t: (1,H,W)
+        Each time step packs N exogenous frames -> inp_t: (4N+3,H,W), tgt_t: (N,H,W)
         Output shapes:
-            seq_inp: (K, 4N, H, W)
-            seq_tgt: (K, 1,  H, W)   # single-step target per time step
+            # Parent:
+            #   temp:   (N,H,W)           @ base-N .. base-1
+            #   power:  (N+1,1,H,W)       @ base-N .. base
+            #   shift:  (N+1,2,H,W)       @ base-N .. base
+            #   target: (N,H,W)           @ base   .. base+N-1
+            #
+            # Flattened per time step:
+            #   temp_c  : 0        → N-1
+            #   power_c : N        → 2N
+            #   shift_c : 2N+1     → 4N+2
+            #   total channels = 4N+3
+            #
+            # Final stacked sequence:
+            #   seq_inp : (K, 4N+3, H, W)
+            #   seq_tgt : (K, N, H, W)
         """
         inp_list, tgt_list = [], []
 
         if self.K > 1:
-            for i in range(self.K):
+            steps = self.K // self.N 
+            for i in range(steps):
                 # Achtung: jetzt garantiert innerhalb der Bounds wegen __len__()
-                temp, power, shift, target = super().__getitem__(idx + i)
-                # Parent liefert:
-                #   temp:   (1,H,W)           @ base
-                #   power:  (N,1,H,W)         @ base..base+N-1
-                #   shift:  (N,2,H,W)         @ base..base+N-1
-                #   target: (N,1,H,W)         @ base+1..base+N
+                temp, power, shift, target = super().__getitem__(idx + self.N * i)
 
-                # zeitliche Kanäle in "C"-Achse flatten:
-                temp_c = temp.reshape(1, self.s, self.s)     # (N,H,W)
-                power_c = power.reshape(-1, self.s, self.s)  # (N,H,W)
-                shift_c = shift.reshape(-1, self.s, self.s)  # (2N,H,W)
+                temp_c = temp                                # (N,H,W)
+                power_c = power.reshape(-1, self.s, self.s)  # (N+1,H,W)
+                shift_c = shift.reshape(-1, self.s, self.s)  # (2*(N+1),H,W)
 
-                inp_t = torch.cat([temp_c, power_c, shift_c], dim=0)  # (4N,H,W)
-                tgt_t = target      # -> (1,H,W)  (ändere zu [-1], falls du "letzter" willst)
+                inp_t = torch.cat([temp_c, power_c, shift_c], dim=0)  # (4N+3,H,W)
+                # inp_t - > temp_c is [0:N], power_c is [N:2N+1], shift_c is [2N+1:4N+3]
+                tgt_t = target                                        # (N,H,W)
                 inp_list.append(inp_t)
                 tgt_list.append(tgt_t)
 
-            seq_inp = torch.stack(inp_list, dim=0)  # (K, 4N, H, W)
-            seq_tgt = torch.stack(tgt_list, dim=0)  # (K, 1,  H, W)
+            seq_inp = torch.stack(inp_list, dim=0)  # (K, 4N+3, H, W)
+            seq_tgt = torch.stack(tgt_list, dim=0)  # (K, N, H, W)
             # print(f"Dataset __getitem__ idx={idx}: seq_inp shape: {seq_inp.shape}, seq_tgt shape: {seq_tgt.shape}")
             return seq_inp, seq_tgt
         
         elif self.K == 1:
             temp, power, shift, target = super().__getitem__(idx)
-            # Flatten sequence dims into channels
-            power_c = power.reshape(-1, self.s, self.s)                       # (N, s, s)
-            shift_c = shift.reshape(-1, self.s, self.s)                       # (2N, s, s)
+            
+            temp_c = temp                                # (N,H,W)
+            power_c = power.reshape(-1, self.s, self.s)  # (N+1,H,W)
+            shift_c = shift.reshape(-1, self.s, self.s)  # (2*(N+1),H,W)
 
-            inp = torch.cat([temp, power_c, shift_c], dim=0)                  # (1+3N, s, s)
-            tgt = target                                                      # (1,H,W)
+            inp_t = torch.cat([temp_c, power_c, shift_c], dim=0)  # (4N+3,H,W)
+            # inp_t - > temp_c is [0:N], power_c is [N:2N+1], shift_c is [2N+1:4N+3]
+            tgt_t = target                                        # (N,H,W)
             # print(f"Dataset __getitem__ idx={idx}: inp shape: {inp.shape}, tgt shape: {tgt.shape}")
-            return inp, tgt
+            return inp_t, tgt_t
         else:
             raise ValueError(f"Invalid K: {self.K}")
 

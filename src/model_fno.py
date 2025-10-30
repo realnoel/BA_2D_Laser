@@ -44,11 +44,11 @@ class SpectralConv2d(nn.Module):
 
 
 class FNO2d(nn.Module):
-    def __init__(self, modes1, modes2, width, in_channels, out_channels=1, pad=8):
+    def __init__(self, modes1, modes2, width, in_dim, out_dim=1, pad=8):
         super().__init__()
         self.width = width
         self.pad = pad
-        self.lift  = nn.Conv2d(in_channels, width, 1)
+        self.lift  = nn.Conv2d(in_dim, width, 1)
 
         self.spect1 = SpectralConv2d(width, width, modes1, modes2)
         self.spect2 = SpectralConv2d(width, width, modes1, modes2)
@@ -58,7 +58,7 @@ class FNO2d(nn.Module):
         self.skip2  = nn.Conv2d(width, width, 1)
         self.skip3  = nn.Conv2d(width, width, 1)
 
-        self.proj   = nn.Conv2d(width, out_channels, 1)
+        self.proj   = nn.Conv2d(width, out_dim, 1)
         self.act    = nn.SiLU()
 
     def forward(self, x):

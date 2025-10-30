@@ -3,8 +3,7 @@ import os
 import torch
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import imageio.v2 as iio
-import imageio_ffmpeg
+
 
 from datetime import datetime
 
@@ -93,30 +92,30 @@ def _to_THW(seq: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"Unexpected shape: {tuple(x.shape)}")
     return x.float()
 
-def animate_side_by_side_mp4(pred_seq, gt_seq, out_path, fps=8, cmap="inferno", vmin=None, vmax=None):
-    """
-    pred_seq, gt_seq: gleiche Länge/Größe, jeweils (B,T,1,H,W) | (T,1,H,W) | (T,H,W)
-    """
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    p = _to_THW(pred_seq)
-    g = _to_THW(gt_seq)
-    assert p.shape == g.shape, f"Shape mismatch: {p.shape} vs {g.shape}"
-    T, H, W = p.shape
+# def animate_side_by_side_mp4(pred_seq, gt_seq, out_path, fps=8, cmap="inferno", vmin=None, vmax=None):
+#     """
+#     pred_seq, gt_seq: gleiche Länge/Größe, jeweils (B,T,1,H,W) | (T,1,H,W) | (T,H,W)
+#     """
+#     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+#     p = _to_THW(pred_seq)
+#     g = _to_THW(gt_seq)
+#     assert p.shape == g.shape, f"Shape mismatch: {p.shape} vs {g.shape}"
+#     T, H, W = p.shape
 
-    if vmin is None: vmin = float(min(p.min(), g.min()))
-    if vmax is None: vmax = float(max(p.max(), g.max()))
+#     if vmin is None: vmin = float(min(p.min(), g.min()))
+#     if vmax is None: vmax = float(max(p.max(), g.max()))
 
-    norm   = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
-    cmap_f = mpl.cm.get_cmap(cmap)
+#     norm   = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+#     cmap_f = mpl.cm.get_cmap(cmap)
 
-    with iio.get_writer(out_path, format="FFMPEG", fps=fps, codec="libx264", ffmpeg_params=["-pix_fmt", "yuv420p"]) as writer:
-        for t in range(T):
-            rgb_p = (cmap_f(norm(p[t].numpy()))[..., :3] * 255).astype(np.uint8)
-            rgb_g = (cmap_f(norm(g[t].numpy()))[..., :3] * 255).astype(np.uint8)
-            frame = np.concatenate([rgb_p, rgb_g], axis=1)  # (H, 2W, 3)
-            frame = np.ascontiguousarray(frame)
-            writer.append_data(frame)
-    return out_path
+#     with iio.get_writer(out_path, format="FFMPEG", fps=fps, codec="libx264", ffmpeg_params=["-pix_fmt", "yuv420p"]) as writer:
+#         for t in range(T):
+#             rgb_p = (cmap_f(norm(p[t].numpy()))[..., :3] * 255).astype(np.uint8)
+#             rgb_g = (cmap_f(norm(g[t].numpy()))[..., :3] * 255).astype(np.uint8)
+#             frame = np.concatenate([rgb_p, rgb_g], axis=1)  # (H, 2W, 3)
+#             frame = np.ascontiguousarray(frame)
+#             writer.append_data(frame)
+#     return out_path
 
 def save_temperature_plot_sequence(temp_tensor, idx, path='results', name_prefix='temp', epoch=None):
 
@@ -134,4 +133,46 @@ def save_temperature_plot_sequence(temp_tensor, idx, path='results', name_prefix
         save_temperature_plot(frame, path=path,
                               name_prefix=f"{name_prefix}_id{idx}_t{t:03d}",
                               epoch=epoch)
+        
+def plot_error(error, path, filename="rel_l2.png", title="Error", y_axis="Error", x_axis="Step t"):
+    """
+    Plot relative L2 (%) vs. step t from a list like:
+        rel_l2 = [(value, t), (value, t), ...]
+    and save to path/filename.
+
+    - Handles floats/ints/torch tensors for 'value'.
+    - Sorts points by t before plotting.
+    """
+    # ensure output dir exists
+    os.makedirs(path, exist_ok=True)
+    out = os.path.join(path, filename)
+
+    # normalize & sort
+    pairs = []
+    for v, t in error:
+        try:
+            # handle torch tensors
+            if hasattr(v, "item") and callable(v.item):
+                v = v.item()
+        except Exception:
+            pass
+        # basic sanity: cast to float
+        v = float(v)
+        pairs.append((int(t), v))
+    pairs.sort(key=lambda p: p[0])
+
+    steps = [p[0] for p in pairs]
+    values = [p[1] for p in pairs]
+
+    # plot (single chart, default style/colors)
+    plt.figure(figsize=(6, 4))
+    plt.plot(steps, values, marker="o")
+    plt.title(title)
+    plt.xlabel(x_axis)
+    plt.ylabel(y_axis)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    return out
     

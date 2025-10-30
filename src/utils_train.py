@@ -67,21 +67,62 @@ def load_checkpoint(model, ckpt_path, optimizer=None, scheduler=None, map_locati
         state.get("run_id", None),
     )
 
-def mse_evalute_avg(y_pred: torch.Tensor, y_true: torch.Tensor):
+# def mse_evalute_avg_3(y_pred: torch.Tensor, y_true: torch.Tensor):
+#     """
+#     Compute Mean Squared Error (MSE) between predicted and true tensors.
+#     """
+#     y_pred = torch.stack(y_pred, dim=0)
+#     y_true = torch.stack(y_true, dim=0)
+#     if y_pred.dim() == 5 and y_true.dim() == 4:
+#         # y_true: (T,1,H,W) → (T,1,1,H,W) to match (T,B,1,H,W)
+#         y_true = y_true.unsqueeze(1)
+#     assert y_pred.shape == y_true.shape, "Shape mismatch between y_pred and y_true"
+#     mse = 0
+#     for y_pred, y_true in zip(y_pred, y_true):
+#         mse += torch.mean((y_pred - y_true) ** 2).item()
+#     return mse / len(y_pred)
+
+def mse_evaluate_avg(y_preds: torch.Tensor, y_trues: torch.Tensor):
     """
     Compute Mean Squared Error (MSE) between predicted and true tensors.
     """
-    y_pred = torch.stack(y_pred, dim=0)
-    y_true = torch.stack(y_true, dim=0)
-    assert y_pred.shape == y_true.shape, "Shape mismatch between y_pred and y_true"
-    mse = 0
-    for y_pred, y_true in zip(y_pred, y_true):
-        mse += torch.mean((y_pred - y_true) ** 2).item()
-    return mse / len(y_pred)
+    Yp = torch.stack(y_preds, dim=0)   # (T,B,1,H,W)
+    Yt = torch.stack(y_trues, dim=0)   # (T,B,1,H,W)
+    if Yp.dim() == 5 and Yt.dim() == 4:
+        Yt = Yt.unsqueeze(1)
+    assert Yp.shape == Yt.shape
 
-def relative_l2_percent(y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    return torch.mean((Yp - Yt) ** 2).item()  # true average over all dims
+
+def relative_l2_percent(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     # handles your unsqueeze convention (B,H,W) -> (B,1,H,W)
-    y_pred = torch.stack(y_pred, dim=0)
-    y_true = torch.stack(y_true, dim=0)
+    if torch.is_tensor(y_pred) and torch.is_tensor(y_true):
+        Yp = y_pred
+        Yt = y_true
+    elif isinstance(y_pred, (list, tuple)) and isinstance(y_true, (list, tuple)) and len(y_pred) > 1 and len(y_true) > 1:
+        Yp = torch.stack(y_pred, dim=0)
+        Yt = torch.stack(y_true, dim=0)
+    elif isinstance(y_pred, (list, tuple)) and isinstance(y_true, (list, tuple)) and len(y_pred) == 1 and len(y_true) == 1:
+        Yp = y_pred[0]
+        Yt = y_true[0]
+    else: 
+        raise ValueError(f"Unexpected input types: {type(Yp)}, {type(Yt)}")
+    
     # Relative L2 as you did: sqrt(mean((y_hat - y)^2)/mean(y^2)) * 100
-    return (torch.mean((y_pred - y_true) ** 2) / torch.mean(y_true ** 2)).sqrt() * 100.0
+    return (torch.mean((Yp - Yt) ** 2) / torch.mean(Yt ** 2)).sqrt() * 100.0
+
+def relative_l1_percent(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+    """Compute Relative L1 (%) between predicted and true tensors."""
+    if torch.is_tensor(y_pred) and torch.is_tensor(y_true):
+        Yp = y_pred
+        Yt = y_true
+    elif isinstance(y_pred, (list, tuple)) and isinstance(y_true, (list, tuple)) and len(y_pred) > 1 and len(y_true) > 1:
+        Yp = torch.stack(y_pred, dim=0)
+        Yt = torch.stack(y_true, dim=0)
+    elif isinstance(y_pred, (list, tuple)) and isinstance(y_true, (list, tuple)) and len(y_pred) == 1 and len(y_true) == 1:
+        Yp = y_pred[0]
+        Yt = y_true[0]
+    else: 
+        raise ValueError(f"Unexpected input types: {type(Yp)}, {type(Yt)}")
+    
+    return (torch.mean(torch.abs(Yp - Yt)) / torch.mean(torch.abs(Yt))) * 100.0
