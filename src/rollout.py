@@ -173,11 +173,11 @@ def rollout():
     B, T, C, H, W = tgt.shape
     assert C == N, f"Expected {N} channels in target, got {C}"
     B, T, C, H, W = inp.shape
-    assert C == 4*N+3, f"Expected {4*N+3} channels per step, got {C}"
+    # assert C == 4*N+3, f"Expected {4*N+3} channels per step, got {C}"
     assert B == 1, f"Use batch_size=1, got {B}"
     
     # decide rollout length
-    steps = T if args.steps < 0 else min(args.steps, T)
+    steps = min(args.steps, T) if args.steps > 0 else 1
 
     print(f"[INFO] Channels => temp:{N}, power:{N}, shift:{2*N}  -> total {4*N}")
     print(f"[INFO] Rollout steps: {steps}")
@@ -190,7 +190,8 @@ def rollout():
     with torch.no_grad():
         for t in range(steps):
             # Prepare model input for this step
-            exog_t = inp[:, t, N:4*N+3, ...].contiguous()       # (B, 3N+3, H, W)
+            exog_t = inp[:, t, N:, ...].contiguous()       # (B, 3N+3, H, W) E1 and E2 
+            # exog_t = inp[:, t, N:4*N+3, ...].contiguous()       # (B, 3N+3, H, W) E1 and E2
 
             # Combine temp_stack + exog_t
             model_in = torch.cat([temp_stack, exog_t], dim=1)   # (B, 4N+3, H, W)
@@ -199,63 +200,67 @@ def rollout():
             expected_in = hparams.get("model_cfg", {}).get("in_dim", 4*N+3)
             assert model_in.size(1) == expected_in, f"in_dim mismatch: {model_in.size(1)} vs {expected_in}"
 
+
+            # Prediction
+            y_pred = model(model_in)    # (B,N,H,W)
+
             # Ground truth at this step
-            gt_t = tgt[:, t:t+N, ...]                           # (B, N, H, W)
+            gt_t = tgt[:, t:t+1, ...]                           # (B, N, H, W)
 
             # ---- Shape-Normalisation -> (B,1,H,W) ----
             if gt_t.dim() == 3:                  # (B,H,W)
                 gt_t = gt_t.unsqueeze(1)         # -> (B,1,H,W) 
             elif gt_t.dim() == 5:                # (B,?,1,H,W)
-                gt_t = gt_t[:, 0, ...]           # 
+                gt_t = gt_t[:, 0, ...]           # -> (B,1,H,W)
                 if gt_t.dim() == 3:              # (B,H,W)
                     gt_t = gt_t.unsqueeze(1)     # -> (B,1,H,W)
             elif gt_t.dim() == 2:                # (H,W)
                 gt_t = gt_t.unsqueeze(0).unsqueeze(0)  # -> (1,1,H,W)
 
-            # Prediction
-            y_pred = model(model_in)    # (B,N,H,W)
-            # y_pred = (y_pred - norm["min_model"]) / (norm["max_model"] - norm["min_model"]) # normalize
-            # y_pred_vis = y_pred * (norm["max_model"] - norm["min_model"]) + norm["min_model"] # denormalize
+            k = 0 # Which frame to log from the N predicted frames
+            gt_1 = gt_t[:, k:k+1, ...]       # (B,1,H,W)
+            yp_1 = y_pred[:, k:k+1, ...]     # (B,1,H,W)
 
             if y_pred.dim() == 3:
                 y_pred = y_pred.unsqueeze(1)
 
             # Log & autoregressive feedback
-            ground_truth.append(gt_t.detach().cpu())
-            preds.append(y_pred.detach().cpu())
+            ground_truth.append(gt_1.detach().cpu())
+            preds.append(yp_1.detach().cpu())
             # print(f"y_preds[{t}] shape: {y_pred.shape}, gt_t shape: {gt_t.shape}")
 
             # Update temp_stack for next step
-            temp_stack = y_pred  # (B, N, H, W)
+            # temp_stack = y_pred  # (B, N, H, W)
+            temp_stack = torch.cat([temp_stack[:, 1:], y_pred[:, :1]], dim=1)
 
             mse_mask.append((y_pred - gt_t).pow(2).detach().cpu())
-            rel_l2.append((relative_l2_percent(y_pred, gt_t), t))
-            rel_l1.append((relative_l1_percent(y_pred, gt_t), t))
-            mse_error.append((torch.mean((y_pred - gt_t) ** 2).item(), t))
+            rel_l2.append((relative_l2_percent(yp_1, gt_1), t))
+            rel_l1.append((relative_l1_percent(yp_1, gt_1), t))
+            mse_error.append((torch.mean((yp_1 - gt_1) ** 2).item(), t))
 
     
-    # Save
-    for t in range(len(preds)):
-        save_temperature_plot(
-            preds[t][0, 0],
-            path=f"results_val/{timestamp}/results_pred",
-            name_prefix=f"seq_prediction_step{t} - {args.ckpt}"
-        )
-    for t in range(len(ground_truth)):
-        save_temperature_plot(
-            ground_truth[t][0, 0],
-            path=f"results_val/{timestamp}/results_gt",
-            name_prefix=f"seq_ground_truth_step{t} - {args.ckpt}"
-        )
-    for t in range(len(mse_mask)):
-        save_temperature_plot(
-            mse_mask[t][0, 0],
-            path=f"results_val/{timestamp}/results_mse",
-            name_prefix=f"seq_mse_step{t} - {args.ckpt}",
-            label="MSE",
-            scale_fix=True
-            #max_val=1.0
-        )
+    # # Save
+    # for t in range(len(preds)):
+    #     save_temperature_plot(
+    #         preds[t][0, 0],
+    #         path=f"results_val/{timestamp}/results_pred",
+    #         name_prefix=f"seq_prediction_step{t} - {args.ckpt}"
+    #     )
+    # for t in range(len(ground_truth)):
+    #     save_temperature_plot(
+    #         ground_truth[t][0, 0],
+    #         path=f"results_val/{timestamp}/results_gt",
+    #         name_prefix=f"seq_ground_truth_step{t} - {args.ckpt}"
+    #     )
+    # for t in range(len(mse_mask)):
+    #     save_temperature_plot(
+    #         mse_mask[t][0, 0],
+    #         path=f"results_val/{timestamp}/results_mse",
+    #         name_prefix=f"seq_mse_step{t} - {args.ckpt}",
+    #         label="MSE",
+    #         scale_fix=True
+    #         #max_val=1.0
+    #     )
 
     plot_error(rel_l2, f"results_val/{timestamp}", filename="rel_l2.png", title=f"Rel. L2 - {args.ckpt}", y_axis="Rel. L2 [%]", x_axis="Step t")
     plot_error(rel_l1, f"results_val/{timestamp}", filename="rel_l1.png", title=f"Rel. L1 - {args.ckpt}", y_axis="Rel. L1 [%]", x_axis="Step t")
@@ -265,7 +270,7 @@ def rollout():
     print(f"Average Rel-L2: {relative_l2_percent(preds, ground_truth):.4f}%")
     print(f"Average Rel-L1: {relative_l1_percent(preds, ground_truth):.4f}%")
     print("\nRollout complete!")
-    print(f"Total steps predicted: {len(preds)*N}")
+    print(f"Total steps predicted: {len(preds)}")
 
 
 if __name__ == "__main__":

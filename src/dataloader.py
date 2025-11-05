@@ -54,9 +54,12 @@ class PDEDatasetLoader_Single(Dataset):
         power_bundle = []
         shift_bundle = []
 
-        # --- Past N controls: t = base_idx-N ... base_idx-1 ---
-        for i in range(self.N + 1):
-            t = base_idx - self.N + i
+        # --- Past N controls: t = base_idx ... base_idx-N-1 ---
+        # For E1/E2 use self.N input_p and dx
+        # For E3/E4 use 2*self.N input_p and dx and 
+        # 
+        for i in range(self.N):
+            t = base_idx + i
             sample_idx = f"sample_{t}"
 
             # --- Power ---
@@ -121,11 +124,13 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
         """
         inp_list, tgt_list = [], []
 
+        # if idx + self.N * (self.K - 1) >= len(self.index_map):
+        #     raise IndexError(f"Requested K={self.K} exceeds available sequence length for N={self.N}. "
+        #                     f"Max allowed K is {(len(self.index_map) // self.N)}.")
+
         if self.K > 1:
-            steps = self.K // self.N 
-            for i in range(steps):
-                # Achtung: jetzt garantiert innerhalb der Bounds wegen __len__()
-                temp, power, shift, target = super().__getitem__(idx + self.N * i)
+            for i in range(self.K):
+                temp, power, shift, target = super().__getitem__(idx + i)
 
                 temp_c = temp                                # (N,H,W)
                 power_c = power.reshape(-1, self.s, self.s)  # (N+1,H,W)
