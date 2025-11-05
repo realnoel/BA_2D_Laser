@@ -55,11 +55,11 @@ class PDEDatasetLoader_Single(Dataset):
         shift_bundle = []
 
         # --- Past N controls: t = base_idx ... base_idx-N-1 ---
-        # For E1/E2 use self.N input_p and dx
-        # For E3/E4 use 2*self.N input_p and dx and 
+        # For E1/E2 use self.N input_p and dx t = base_idx + i
+        # For E3/E4 use 2*self.N input_p and dx and t = base_idx + i - self.N
         # 
-        for i in range(self.N):
-            t = base_idx + i
+        for i in range(2*self.N):
+            t = base_idx + i - self.N
             sample_idx = f"sample_{t}"
 
             # --- Power ---
