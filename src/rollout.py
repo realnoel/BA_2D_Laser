@@ -13,7 +13,7 @@ import torch, os, glob, argparse, yaml
 from datetime import datetime
 from torch.utils.data import DataLoader
 
-from dataloader import PDEDatasetLoader_Multi
+from dataloader_1 import PDEDatasetLoader_Multi
 from model_cno import CNO2d
 from model_fno import FNO2d
 from utils_images import save_temperature_plot, plot_error
@@ -27,7 +27,9 @@ def parse_args():
         description="Rollout of trained model checkpoint on the test set."
     )
     p.add_argument("--ckpt", required=True, help="Path to checkpoint directory")
+    p.add_argument("--mode", default="norm", choices=["norm", "phys"], help="Evaluation mode")
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="Device selection")
+    p.add_argument("--strategy", type=int, choices=[1,2,3,4], help="Training strategy used (1,2,3,4)")
     p.add_argument("--steps", type=int, default=-1, help="Number of rollout steps")
     p.add_argument("--yaml", default="configs/default.yaml")
     p.add_argument("--idx", type=int, default=0, help="Which sequence index to use from the test set (default: 0)")
@@ -115,6 +117,20 @@ def get_initial_pred(model, val_loader, device):
             y_pred = model(x)
     return y_pred
 
+def feature_to_physical_space_T(T, norm):
+    """Inverse of physical_to_feature_space.
+    Args:
+        x: Tensor in normalized/feature space.
+        norm: dict or object with min/max or mean/std.
+    Returns:
+        Tensor in physical units (K, W/mm^2, ...).
+    """
+    min_v = norm["min_model"]
+    max_v = norm["max_model"]
+    denormalized_T = T * (max_v - min_v) + min_v
+    return torch.exp(denormalized_T)
+
+
 # -----------------------------
 # Rollout
 # -----------------------------
@@ -136,6 +152,22 @@ def rollout():
     ckpt_file = find_ckpt_file(ckpt_dir)
     model     = load_weights_into_model(model, ckpt_file, device)
 
+    STRATEGY = args.strategy
+    assert STRATEGY in [1,2,3,4], "STRATEGY must be 1, 2, 3, or 4"
+
+    if STRATEGY == 1:
+        print("[INFO] Using STRATEGY 1: Exogenous variables N future steps and N past steps. Endogenous variable (T) only N past steps, target is N future steps.")
+        from dataloader_1 import PDEDatasetLoader_Multi
+    elif STRATEGY == 2:
+        print("[INFO] Using STRATEGY 2: Exogenous variables N future steps. Endogenous variable (T) only N past steps, target is N future steps.")
+        from dataloader_2 import PDEDatasetLoader_Multi
+    elif STRATEGY == 3:
+        print("[INFO] Using STRATEGY 3: Exogenous variables N past steps plus next future step. Endogenous variable (T) only N past steps, target is next future steps.")
+        from dataloader_3 import PDEDatasetLoader_Multi
+    elif STRATEGY == 4:
+        print("[INFO] Using STRATEGY 4: Exogenous variables next future step. Endogenous variable (T) only N past steps, target is next future steps.")
+        from dataloader_4 import PDEDatasetLoader_Multi
+
     # Validation dataset
     N = hparams.get("training", {}).get("N", 1)
     print(args.steps, N)
@@ -156,22 +188,15 @@ def rollout():
         "max_model": norm[5]
     }
 
-    # val_loader = DataLoader(
-    #     val_ds,
-    #     batch_size=1,           # one sequence per batch     # SOLLTE DIESER WERT NICHT N SEIN???? DAMIT INP = OUT = N IST????????
-    #     shuffle=False,          # keep file/index order
-    #     num_workers=0           # keep strict order + HDF5 safety
-    # )
-
     # --- One specific sequence (use --idx) ---
-    seq_inp, seq_tgt = val_ds[args.idx]                         # seq_inp: (K, 4N+3, H, W), seq_tgt: (K, N, H, W)
-    inp = seq_inp.unsqueeze(0).to(device, dtype=torch.float32)  # inp: (1, K, 4N+3, H, W)  per time-step: [N temp | N power | 2N shift]
-    tgt = seq_tgt.unsqueeze(0).to(device, dtype=torch.float32)  # tgt: (1, K, N, H, W)  target for each step
+    seq_inp, seq_tgt = val_ds[args.idx]                         
+    inp = seq_inp.unsqueeze(0).to(device, dtype=torch.float32)  
+    tgt = seq_tgt.unsqueeze(0).to(device, dtype=torch.float32)  
 
     # Sanity check
     print(f"Input shape: {inp.shape}, Target sequence shape: {tgt.shape}")
     B, T, C, H, W = tgt.shape
-    assert C == N, f"Expected {N} channels in target, got {C}"
+    # assert C == N, f"Expected {N} channels in target, got {C}"
     B, T, C, H, W = inp.shape
     # assert C == 4*N+3, f"Expected {4*N+3} channels per step, got {C}"
     assert B == 1, f"Use batch_size=1, got {B}"
@@ -225,9 +250,15 @@ def rollout():
                 y_pred = y_pred.unsqueeze(1)
 
             # Log & autoregressive feedback
-            ground_truth.append(gt_1.detach().cpu())
-            preds.append(yp_1.detach().cpu())
-            # print(f"y_preds[{t}] shape: {y_pred.shape}, gt_t shape: {gt_t.shape}")
+            if args.mode == "phys":
+                # Evaluate in physical space
+                physical_gt = feature_to_physical_space_T(gt_1.detach().cpu(), norm)
+                physical_pred = feature_to_physical_space_T(yp_1.detach().cpu(), norm)
+                ground_truth.append(physical_gt.detach().cpu())
+                preds.append(physical_pred.detach().cpu())
+            else:
+                ground_truth.append(gt_1.detach().cpu())
+                preds.append(yp_1.detach().cpu())
 
             # Update temp_stack for next step
             # temp_stack = y_pred  # (B, N, H, W)
@@ -244,13 +275,15 @@ def rollout():
     #     save_temperature_plot(
     #         preds[t][0, 0],
     #         path=f"results_val/{timestamp}/results_pred",
-    #         name_prefix=f"seq_prediction_step{t} - {args.ckpt}"
+    #         name_prefix=f"seq_prediction_step{t} - {args.ckpt}",
+    #         label="Temperature (K)"
     #     )
     # for t in range(len(ground_truth)):
     #     save_temperature_plot(
     #         ground_truth[t][0, 0],
     #         path=f"results_val/{timestamp}/results_gt",
-    #         name_prefix=f"seq_ground_truth_step{t} - {args.ckpt}"
+    #         name_prefix=f"seq_ground_truth_step{t} - {args.ckpt}",
+    #         label="Temperature (K)"
     #     )
     # for t in range(len(mse_mask)):
     #     save_temperature_plot(
@@ -258,8 +291,6 @@ def rollout():
     #         path=f"results_val/{timestamp}/results_mse",
     #         name_prefix=f"seq_mse_step{t} - {args.ckpt}",
     #         label="MSE",
-    #         scale_fix=True
-    #         #max_val=1.0
     #     )
 
     plot_error(rel_l2, f"results_val/{timestamp}", filename="rel_l2.png", title=f"Rel. L2 - {args.ckpt}", y_axis="Rel. L2 [%]", x_axis="Step t")

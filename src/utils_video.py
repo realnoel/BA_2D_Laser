@@ -95,11 +95,11 @@ def generate_video_from_pngs_single_image(src_dir, save_root, fps=8):
 #     generate_video_from_pngs_single_image("results_val/results_gt_08102025_125031", "results_video", fps=8)
 
 if __name__ == "__main__":
-    dir_name = "30102025_180345" # Enter the name of the directory in results_val
+    dir_name = "results_val/06112025_102334" # Enter the name of the directory in results_val
     generate_triptych_video(
-        f"results_val/{dir_name}/results_gt",
-        f"results_val/{dir_name}/results_pred",
-        f"results_val/{dir_name}/results_mse",
+        f"{dir_name}/results_gt",
+        f"{dir_name}/results_pred",
+        f"{dir_name}/results_mse",
         save_root="results_video",
         fps=8
     )

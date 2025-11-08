@@ -13,7 +13,6 @@ from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger
 
-from dataloader import PDEDatasetLoader_Multi
 from model_fno import FNO2d
 from model_cno import CNO2d
 # from utils_images import save_temperature_plot  # optional
@@ -190,19 +189,47 @@ class PDEDataModule(L.LightningDataModule):
                          shuffle=False, 
                          num_workers=0
                          )
-
+    
+# ---- BASELINE MODELS -----
+#
+# STRATEGY 1: Exogenous variables (Q, dx, dy) N future steps and N past steps.     Endogenous variable (T) only N past steps, target is N future steps.
+# STRATEGY 2: Exogenous variables (Q, dx, dy) N future steps                       Endogenous variable (T) only N past steps, target is N future steps.
+# STRATEGY 3: Exogenous variables (Q, dx, dy) N past steps plus next future step.  Endogenous variable (T) only N past steps, target is next future steps.
+# STRATEGY 4: Exogenous variables (Q, dx, dy) next future step.                    Endogenous variable (T) only N past steps, target is next future steps.
+#
 # ---------- Main ----------
 if __name__ == "__main__":
     with open("configs/default.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    L.seed_everything(config["training"]["seed"], workers=True)
+    STRATEGY = config["training"]["strategy"]
+    assert STRATEGY in [1,2,3,4], "STRATEGY must be 1, 2, 3, or 4"
 
-    # pick model (CNO default, switch to FNO by uncommenting)
     N = config["training"]["N"]
     assert N >= 1, "N must be at least 1"
-    IN_DIM = 4 * N + 3
-    OUT_DIM = N
+
+    if STRATEGY == 1:
+        print("[INFO] Using STRATEGY 1: Exogenous variables N future steps and N past steps. Endogenous variable (T) only N past steps, target is N future steps.")
+        from dataloader_1 import PDEDatasetLoader_Multi
+        IN_DIM = 7*N
+        OUT_DIM = N
+    elif STRATEGY == 2:
+        print("[INFO] Using STRATEGY 2: Exogenous variables N future steps. Endogenous variable (T) only N past steps, target is N future steps.")
+        from dataloader_2 import PDEDatasetLoader_Multi
+        IN_DIM = 4*N
+        OUT_DIM = N
+    elif STRATEGY == 3:
+        print("[INFO] Using STRATEGY 3: Exogenous variables N past steps plus next future step. Endogenous variable (T) only N past steps, target is next future steps.")
+        from dataloader_3 import PDEDatasetLoader_Multi
+        IN_DIM = 4*N+3
+        OUT_DIM = 1
+    elif STRATEGY == 4:
+        print("[INFO] Using STRATEGY 4: Exogenous variables next future step. Endogenous variable (T) only N past steps, target is next future steps.")
+        from dataloader_4 import PDEDatasetLoader_Multi
+        IN_DIM = N+3
+        OUT_DIM = 1
+
+    L.seed_everything(config["training"]["seed"], workers=True)
 
     use_model = config["training"]["model"]
     if use_model == "FNO":

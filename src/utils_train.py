@@ -67,21 +67,6 @@ def load_checkpoint(model, ckpt_path, optimizer=None, scheduler=None, map_locati
         state.get("run_id", None),
     )
 
-# def mse_evalute_avg_3(y_pred: torch.Tensor, y_true: torch.Tensor):
-#     """
-#     Compute Mean Squared Error (MSE) between predicted and true tensors.
-#     """
-#     y_pred = torch.stack(y_pred, dim=0)
-#     y_true = torch.stack(y_true, dim=0)
-#     if y_pred.dim() == 5 and y_true.dim() == 4:
-#         # y_true: (T,1,H,W) → (T,1,1,H,W) to match (T,B,1,H,W)
-#         y_true = y_true.unsqueeze(1)
-#     assert y_pred.shape == y_true.shape, "Shape mismatch between y_pred and y_true"
-#     mse = 0
-#     for y_pred, y_true in zip(y_pred, y_true):
-#         mse += torch.mean((y_pred - y_true) ** 2).item()
-#     return mse / len(y_pred)
-
 def mse_evaluate_avg(y_preds: torch.Tensor, y_trues: torch.Tensor):
     """
     Compute Mean Squared Error (MSE) between predicted and true tensors.
@@ -90,7 +75,7 @@ def mse_evaluate_avg(y_preds: torch.Tensor, y_trues: torch.Tensor):
     Yt = torch.stack(y_trues, dim=0)   # (T,B,1,H,W)
     if Yp.dim() == 5 and Yt.dim() == 4:
         Yt = Yt.unsqueeze(1)
-    assert Yp.shape == Yt.shape
+    assert Yp.shape == Yt.shape 
 
     return torch.mean((Yp - Yt) ** 2).item()  # true average over all dims
 

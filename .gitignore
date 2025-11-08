@@ -1,7 +1,9 @@
 results/
 results_val/
+results_video/
 data/
 checkpoints/
+*.mp4
 
 .DS_Store
 

@@ -4,10 +4,11 @@ training:
   epochs: 500
   seed: 0
   test_split: 0.2
-  N: 2
+  strategy: 4                     # Valid strategies: 1, 2, 3, 4
+  N: 3
   model: "FNO"                      # Valid models "CNO" and "FNO"
-  optimizer: "optimizer_adam"      # Save name of optimizer as it's dictionary is named in this file
-  scheduler: "scheduler_steplr"     # Save name of scheduler as it's dictionary is named in this file
+  optimizer: "optimizer_adamw"      # Save name of optimizer as it's dictionary is named in this file
+  scheduler: "scheduler_cosineannealinglr"     # Save name of scheduler as it's dictionary is named in this file
 
 model_fno:
   modes1: 24
@@ -33,6 +34,7 @@ optimizer_adam:
 optimizer_adamw:
   optimizer: "torch.optim.AdamW"
   lr: 0.001
+  weight_decay: 0.01
 
 scheduler_steplr:
   scheduler: "torch.optim.lr_scheduler.StepLR"
