@@ -92,31 +92,6 @@ def _to_THW(seq: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"Unexpected shape: {tuple(x.shape)}")
     return x.float()
 
-# def animate_side_by_side_mp4(pred_seq, gt_seq, out_path, fps=8, cmap="inferno", vmin=None, vmax=None):
-#     """
-#     pred_seq, gt_seq: gleiche Länge/Größe, jeweils (B,T,1,H,W) | (T,1,H,W) | (T,H,W)
-#     """
-#     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-#     p = _to_THW(pred_seq)
-#     g = _to_THW(gt_seq)
-#     assert p.shape == g.shape, f"Shape mismatch: {p.shape} vs {g.shape}"
-#     T, H, W = p.shape
-
-#     if vmin is None: vmin = float(min(p.min(), g.min()))
-#     if vmax is None: vmax = float(max(p.max(), g.max()))
-
-#     norm   = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
-#     cmap_f = mpl.cm.get_cmap(cmap)
-
-#     with iio.get_writer(out_path, format="FFMPEG", fps=fps, codec="libx264", ffmpeg_params=["-pix_fmt", "yuv420p"]) as writer:
-#         for t in range(T):
-#             rgb_p = (cmap_f(norm(p[t].numpy()))[..., :3] * 255).astype(np.uint8)
-#             rgb_g = (cmap_f(norm(g[t].numpy()))[..., :3] * 255).astype(np.uint8)
-#             frame = np.concatenate([rgb_p, rgb_g], axis=1)  # (H, 2W, 3)
-#             frame = np.ascontiguousarray(frame)
-#             writer.append_data(frame)
-#     return out_path
-
 def save_temperature_plot_sequence(temp_tensor, idx, path='results', name_prefix='temp', epoch=None):
 
     y = temp_tensor.detach().cpu()
@@ -175,4 +150,88 @@ def plot_error(error, path, filename="rel_l2.png", title="Error", y_axis="Error"
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     return out
+
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "results_val", start_epoch: int = 0):
+    """
+    Plot train and validation loss curves from a metrics CSV file (log-scaled y-axis).
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the metrics.csv file.
+    metric : str
+        Metric type: 'L1', 'L2', or 'MSE' (case-insensitive).
+    out_dir : str
+        Directory where the output plot will be saved.
+    start_epoch : int, optional
+        Ignore all epochs before this value (default = 0).
+    """
+
+    # --- Select columns based on metric ---
+    metric = metric.upper()
+    if metric == "L1":
+        train_col = "train_l1_percent"
+        val_col = "val_rel_l1_percent"
+        ylabel = "L1 (%)"
+    elif metric == "L2":
+        train_col = "train_rel_l2_percent"
+        val_col = "val_rel_l2_percent"
+        ylabel = "Relative L2 (%)"
+    elif metric == "MSE":
+        train_col = "train_mse"
+        val_col = "val_mse"
+        ylabel = "MSE"
+    else:
+        raise ValueError("metric must be one of ['L1', 'L2', 'MSE']")
+
+    # --- Read CSV robustly ---
+    df = pd.read_csv(csv_path)
+    df = df.dropna(how="all")
+    df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+    df[train_col] = pd.to_numeric(df[train_col], errors="coerce")
+    df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
+
+    # --- Filter and group ---
+    df = df.dropna(subset=["epoch"])
+    df = df.sort_values("epoch")
+    grouped = df.groupby("epoch")[[train_col, val_col]].mean()
+
+    # --- Slice epochs ---
+    grouped = grouped[grouped.index >= start_epoch]
+
+    # --- Prepare data ---
+    epochs = grouped.index.values
+    train_vals = np.clip(grouped[train_col].values, 1e-12, None)
+    val_vals = np.clip(grouped[val_col].values, 1e-12, None)
+
+    # --- Plot ---
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_vals, label="Train", linewidth=2)
+    plt.plot(epochs, val_vals, label="Validation", linewidth=2)
+    plt.xlabel("Epoch")
+    plt.ylabel(ylabel)
+    plt.yscale("log")
+    plt.title(f"Training vs Validation {metric} Loss (log scale)\nStarting from epoch {start_epoch}")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.5, which="both")
+
+    # --- Save ---
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"loss_curve_{metric}_from{start_epoch}.png")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
+    print(f"✅ Saved log-scale plot (starting from epoch {start_epoch}) to {out_path}")
+
+
+
+if __name__ == "__main__":
+    plot_train_val_loss("checkpoints/F2/logs/version_0/metrics.csv", metric="L1", start_epoch=250, out_dir="results_val_F2")
+
     

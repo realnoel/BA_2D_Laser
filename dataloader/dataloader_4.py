@@ -14,17 +14,17 @@ class PDEDatasetLoader_Single(Dataset):
 
     Each sample is centered around a base index and includes:
         - Past N temperature fields ............................ (N, H, W)
-          (endogenous input)
-        - (N + 1) exogenous power fields Q ...................... (N+1, 1, H, W)
-          (covering past N, current, and next-target step)
-        - (N + 1) exogenous shift fields (dx, dy) ............... (N+1, 2, H, W)
-          (same temporal span as Q)
-        - Target: single future temperature field ............... (1, H, W)
+          (endogenous input window)
+        - Next-step exogenous control fields ................... (3, H, W)
+          consisting of:
+              Q(x,y,t+1)       → 1 channel
+              dx(x,y,t+1), dy(x,y,t+1) → 2 channels
+        - Target: temperature at the next time step ............ (1, H, W)
 
-    → Model input channels  = 4 N + 3  
-       (N past T + (N+1) Q + 2 × (N+1) shifts → 4N + 3)
+    → Model input channels  =  N + 3
+       (N past T  +  Q, dx, dy  for next step)
 
-    → Model target channels = 1  
+    → Model target channels =  1
        (next-step temperature field)
 
     Normalization constants are read from the HDF5 file.
@@ -79,9 +79,9 @@ class PDEDatasetLoader_Single(Dataset):
         power_bundle = []
         shift_bundle = []
 
-        # --- Past N controls: t = base_idx - N ... base_idx ---
-        for i in range(self.N + 1):
-            t = base_idx + i - self.N
+        # --- Past N controls: t = base_idx ---
+        for i in range(1):
+            t = base_idx + i
             sample_idx = f"sample_{t}"
 
             # --- Power ---
@@ -109,10 +109,10 @@ class PDEDatasetLoader_Single(Dataset):
         temp = (temp - self.min_model) / (self.max_model - self.min_model)
         target_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
 
-        temp_tensor   = torch.cat(temp_bundle, dim=0)     # (N,H,W)
+        temp_tensor   = torch.cat(temp_bundle[::-1], dim=0) # (N,H,W), list gets returned that u_prev is at index 0
         target_tensor = torch.cat(target_bundle, dim=0)   # (1,H,W)
-        power_tensor  = torch.stack(power_bundle, dim=0)  # (N+1,1,H,W)
-        shift_tensor  = torch.stack(shift_bundle, dim=0)  # (N+1,2,H,W)
+        power_tensor  = torch.stack(power_bundle, dim=0)  # (1,H,W)
+        shift_tensor  = torch.stack(shift_bundle, dim=0)  # (2,H,W)
 
         return temp_tensor, power_tensor, shift_tensor, target_tensor
 
@@ -126,22 +126,22 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
         """
         Multi-step PDE dataset loader.
 
-        Returns sequences of length K. Each sequence contains K consecutive steps.
+        Returns sequences of length K (K consecutive prediction steps).
 
         For each step, the model input concatenates:
-            - Past N temperature fields ......................... (N, H, W)
-            - (N + 1) power input fields Q ...................... (N+1, H, W)
-            - (N + 1) spatial shift fields (dx, dy) ............. (2N+2, H, W)
+            - N past temperature fields ............................ (N, H, W)
+            - 3 exogenous control fields for next step ............. (3, H, W)
+            (Q, dx, dy)
 
-        → total input channels  = 4 N + 3
-        (N past T + (N+1) Q + 2×(N+1) shifts)
+        → total input channels  =  N + 3
+        (N past T  +  3 exogenous next-step controls)
 
-        → target channels       = 1
+        → target channels       =  1
         (future temperature)
 
         Shapes:
-            seq_inp : (K, 4N+3, H, W)
-            seq_tgt : (K, 1,    H, W)
+            seq_inp : (K, N+3, H, W)
+            seq_tgt : (K, 1,   H, W)
         """
         inp_list, tgt_list = [], []
 
@@ -160,7 +160,7 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
 
             seq_inp = torch.stack(inp_list, dim=0)  
             seq_tgt = torch.stack(tgt_list, dim=0)  
-            return seq_inp, seq_tgt # (K, 4N+3, H, W), (K, 1, H, W)
+            return seq_inp, seq_tgt # (K, N+3, H, W), (K, 1, H, W)
         
         elif self.K == 1:
             temp, power, shift, target = super().__getitem__(idx)
@@ -172,7 +172,7 @@ class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
             inp_t = torch.cat([temp_c, power_c, shift_c], dim=0)  
             tgt_t = target                                      
 
-            return inp_t, tgt_t # (4N+3, H, W), (1, H, W)
+            return inp_t, tgt_t # (N+3, H, W), (1, H, W)
         else:
             raise ValueError(f"Invalid K: {self.K}")
 

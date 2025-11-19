@@ -5,8 +5,9 @@ training:
   seed: 0
   test_split: 0.2
   strategy: 4                     # Valid strategies: 1, 2, 3, 4
-  N: 3
-  model: "FNO"                      # Valid models "CNO" and "FNO"
+  N: 1
+  using_refiner: false              # Whether to use refiner or not
+  model: "CNO"                      # Valid models "CNO" and "FNO"
   optimizer: "optimizer_adamw"      # Save name of optimizer as it's dictionary is named in this file
   scheduler: "scheduler_cosineannealinglr"     # Save name of scheduler as it's dictionary is named in this file
 
@@ -20,6 +21,32 @@ model_fno:
 
 model_cno:
   in_dim: 4
+  out_dim: 1
+  size: 44
+  N_layers: 5
+  N_res: 4
+  N_res_neck: 4
+  channel_multiplier: 16
+
+refiner:
+  min_noise_std: 1e-6
+  in_dim: 2
+  out_dim: 1
+  k: 2
+  model: "refiner_model_fno"                    # Valid models "CNO" and "FNO"
+  baseline_path: "checkpoints/E30/checkpoints/best_epochepoch=1952-val_rel_l2_percent=0.96.ckpt"
+  baseline_hparams: "checkpoints/E30/logs/version_0/hparams.yaml"
+
+refiner_model_fno:
+  modes1: 24
+  modes2: 24
+  width: 16
+  in_dim: 2
+  out_dim: 1
+  pad: 8
+
+refiner_model_cno:
+  in_dim: 2
   out_dim: 1
   size: 44
   N_layers: 5
