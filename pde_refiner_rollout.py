@@ -184,12 +184,12 @@ def rollout():
     steps_calc = get_steps(args.steps, N)
     steps_return = args.steps
 
-    train_norm = PDEDatasetLoader_Multi("train", refiner_output=False).get_norm()
+    train_norm = PDEDatasetLoader_Multi("train", refiner_output=True).get_norm()
     val_ds = PDEDatasetLoader_Multi(
         which="test",
         N=N,
         K=steps_calc,
-        refiner_output=False
+        refiner_output=True
     )
     val_ds.load_norm(train_norm)
 
@@ -203,9 +203,10 @@ def rollout():
     }
 
     # LOAD SEQUENCE
-    x, y = val_ds[args.idx]          # shapes (T,C,H,W)
+    x, y, cond = val_ds[args.idx]          # shapes (T,C,H,W)
     x = x.unsqueeze(0).to(device)
     y = y.unsqueeze(0).to(device)
+    cond = cond.unsqueeze(0).to(device)
 
     print(f"Input:  {x.shape}")
     print(f"Target: {y.shape}")
@@ -214,7 +215,8 @@ def rollout():
     assert B == 1
 
     # initial temp window (history)
-    temp_stack = x[:, 0, 0:N, ...].contiguous()     # (1,N,H,W)
+    # temp_stack = x[:, 0, 0:N, ...].contiguous()     # (1,N,H,W)
+    temp_stack = x[:, 0, ...]
 
     preds = []
     gt = []                      # (B, N, H, W)
@@ -225,7 +227,7 @@ def rollout():
     # ROLLOUT LOOP
     for t in range(0, steps_calc, N):
 
-        cond_t = x[:, t, N:, ...].contiguous()          # (B, C_exog, H, W)
+        cond_t = cond[:, t, ...].contiguous()          # (B, C_exog, H, W)
         temp_prev = temp_stack                          # (B, N, H, W)
         t0 = time.time()
 
@@ -248,26 +250,41 @@ def rollout():
             if t_global >= steps_calc:                       # avoid overflow
                 break
 
-            # LOGGING
-            if args.mode == "phys":
-                preds.append(feature_to_physical_space_T(yp[:,0].cpu(), norm))      
-                gt.append(feature_to_physical_space_T(y[:, t_global, 0].cpu(), norm))
-            else:
-                preds.append(yp[:,0].cpu())             # (B,H,W)
-                gt.append(y[:, t_global, 0].cpu())     # (B,H,W)
+            # Move small tensors to CPU for consistent metric computation
+            # yp_cpu and gt_cpu have shape (B, H, W)
+            yp_cpu = yp[:, 0].cpu()
+            gt_cpu = y[:, t_global, 0].cpu()
 
-            gt_frame = gt[-1].to(yp.device)
-            # METRICS
-            mse_mask.append(((yp - gt_frame).pow(2).cpu()))
-            rel_l2.append((relative_l2_percent(yp, gt_frame), t_global))
-            rel_l1.append((relative_l1_percent(yp, gt_frame), t_global))
-            mse_error.append((torch.mean((yp - gt_frame)**2).item(), t_global))
+            # LOGGING / SAVING: keep preds and gt in requested mode
+            if args.mode == "phys":
+                yp_vis = feature_to_physical_space_T(yp_cpu, norm)
+                gt_vis = feature_to_physical_space_T(gt_cpu, norm)
+                preds.append(yp_vis)
+                gt.append(gt_vis)
+                # use physical tensors for metrics as well when in phys mode
+                metric_pred = yp_vis
+                metric_gt = gt_vis
+            else:
+                preds.append(yp_cpu)             # (B,H,W)
+                gt.append(gt_cpu)               # (B,H,W)
+                metric_pred = yp_cpu
+                metric_gt = gt_cpu
+
+            # Ensure metric tensors have shape (B,1,H,W) to match previous conventions
+            mp = metric_pred.unsqueeze(1)
+            mg = metric_gt.unsqueeze(1)
+
+            # METRICS (compute on CPU tensors with matching scale)
+            mse_mask.append(((mp - mg).pow(2).cpu()))
+            rel_l2.append((relative_l2_percent(mp, mg), t_global))
+            rel_l1.append((relative_l1_percent(mp, mg), t_global))
+            mse_error.append((torch.mean((mp - mg)**2).item(), t_global))
 
             metrics.append((
                 t_global,
-                float(relative_l1_percent(yp, gt_frame)),
-                float(relative_l2_percent(yp, gt_frame)),
-                float(torch.mean((yp - gt_frame)**2))
+                float(relative_l1_percent(mp, mg)),
+                float(relative_l2_percent(mp, mg)),
+                float(torch.mean((mp - mg)**2))
             ))
 
 
