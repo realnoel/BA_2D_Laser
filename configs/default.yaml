@@ -1,15 +1,17 @@
 # config.yaml
 training:
-  batch_size: 16
-  epochs: 500
+  batch_size: 32
+  epochs: 2000
   seed: 0
   test_split: 0.2
-  strategy: 4                     # Valid strategies: 1, 2, 3, 4
+  strategy: 3                                   # Valid strategies: 1, 2, 3, 4
   N: 1
-  using_refiner: false              # Whether to use refiner or not
-  model: "CNO"                      # Valid models "CNO" and "FNO"
-  optimizer: "optimizer_adamw"      # Save name of optimizer as it's dictionary is named in this file
-  scheduler: "scheduler_cosineannealinglr"     # Save name of scheduler as it's dictionary is named in this file
+  model: "cno_temp"                                  # Valid models "cno", "fno", "cno_temp"
+  optimizer: "optimizer_adamw"                  # Save name of optimizer as it's dictionary is named in this file
+  scheduler: "scheduler_cosineannealinglr"      # Save name of scheduler as it's dictionary is named in this file
+  ar_warmup_epochs: 250                         # Number of training epochs not using AR_Training
+  ar_prob: 1.0                                  # Probability of using AR_Training after warmup
+  state_noise_sigma: 0.001                      # Std of Gaussian noise for Off-Manifold-Noise
 
 model_fno:
   modes1: 24
@@ -28,31 +30,46 @@ model_cno:
   N_res_neck: 4
   channel_multiplier: 16
 
+model_cno_temp:
+  in_dim: 4                 # Number of input channels.
+  in_size: 44               # Input spatial size
+  out_dim: 1                # Target dimension
+  out_size: 44              # If out_size is 1, Then out_size = in_size. Else must be int
+  N_layers: 5               # Number of (D) or (U) blocks in the network
+  N_res: 2                  # Number of (R) blocks per level (except the neck)
+  N_res_neck: 5             # Number of (R) blocks in the neck
+  channel_multiplier: 32    # How the number of channels evolve?
+  conv_kernel: 3            # Size of all the kernels
+  cutoff_den: 2.0001        # Filter property 1
+  filter_size: 6            # Filter property 2
+  lrelu_upsampling: 2       # Filter property 3
+  half_width_mult: 0.8      # Filter property 4
+  radial: False             # Filter property 5. Is filter radial?
+  batch_norm: True          # Add BN? We do not add BN in lifting/projection layer
+  expand_input: False       # Start with original in_size, or expand it (pad zeros in the spectrum)
+  latent_lift_proj_dim: 64  # Intermediate latent dimension in the lifting/projection layer
+  add_inv: True             # Add invariant block (I) after the intermediate connections?
+  activation: "cno_lrelu"   # Activation function can be 'cno_lrelu' or 'lrelu'
+  is_att: False
+  patch_size: 1
+  dim_multiplier: 1.0
+  depth: 4
+  heads: 4
+  dim_head_multiplier: 1.0
+  mlp_dim_multiplier: 1.0
+  emb_dropout: 0.
+  time_steps: 5             # This is k_max of refiner, defined through refiner:k_max
+  is_time: True             # Whether use FiLM time embedding
+  nl_dim: [0,2,3]           # self.norm [0,2,3] -> nn.BatchNorm2d(channels), [2,3] -> nn.InstanceNorm2d(channels, affine=True), [1,2,3] -> nn.LayerNorm([channels, s, s]), else nn.Identity()
+
 refiner:
-  min_noise_std: 1e-6
-  in_dim: 2
-  out_dim: 1
-  k: 2
-  model: "refiner_model_fno"                    # Valid models "CNO" and "FNO"
-  baseline_path: "checkpoints/E30/checkpoints/best_epochepoch=1952-val_rel_l2_percent=0.96.ckpt"
-  baseline_hparams: "checkpoints/E30/logs/version_0/hparams.yaml"
-
-refiner_model_fno:
-  modes1: 24
-  modes2: 24
-  width: 16
-  in_dim: 2
-  out_dim: 1
-  pad: 8
-
-refiner_model_cno:
-  in_dim: 2
-  out_dim: 1
-  size: 44
-  N_layers: 5
-  N_res: 4
-  N_res_neck: 4
-  channel_multiplier: 16
+  min_noise_std: 1e-5
+  k_max: 10
+  time_multiplier: 1000
+  time_future: 1
+  difference_weights: 1
+  ema_decay: 0.995
+  use_refiner: True
 
 optimizer_adam:
   optimizer: "torch.optim.Adam"
@@ -60,8 +77,8 @@ optimizer_adam:
 
 optimizer_adamw:
   optimizer: "torch.optim.AdamW"
-  lr: 0.001
-  weight_decay: 0.01
+  lr: 1e-4
+  weight_decay: 1e-5
 
 scheduler_steplr:
   scheduler: "torch.optim.lr_scheduler.StepLR"
@@ -70,6 +87,7 @@ scheduler_steplr:
 
 scheduler_cosineannealinglr:
   scheduler: "torch.optim.lr_scheduler.CosineAnnealingLR"
+  eta_min: 1e-6
 
 dataset:
   dir: "data"
