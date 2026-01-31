@@ -1,0 +1,21 @@
+torch==2.1.0+cu121
+torchvision==0.16.0+cu121
+torchaudio==2.1.0+cu121
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+lightning==2.2.1
+pytorch-lightning==2.2.1
+numpy==1.26.4
+h5py
+pyyaml
+matplotlib
+pandas
+
+diffusers==0.26.3
+transformers==4.39.3
+accelerate
+huggingface_hub==0.20.2
+
+einops
+scipy
+tqdm

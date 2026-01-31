@@ -15,8 +15,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Ea
 from pytorch_lightning.loggers import CSVLogger
 from diffusers.schedulers import DDPMScheduler
 
-from model.model_fno_refiner import FNO2dRefiner
-from model.model_cno_timeModule_refiner import CNO2d_Temporal
+from model.model_cno_timeModule import CNO2d_Temporal
 from utils.utils_refiner import CustomMSELoss, ExponentialMovingAverage, MSE, REL_L1, REL_L2
 
 
@@ -24,16 +23,16 @@ class PDERefiner(L.LightningModule):
     def __init__(self, neural_operator: nn.Module, config: dict):
         super().__init__()
         self.neural_operator = neural_operator
+        # Get configurations
         self.config = config
-        
         self.N = config["training"]["N"]
         self.use_residual = config["refiner"]["use_residual"]
         self.cfg_train = config["training"]
         self.core_model_name = config["training"]["model"]
         self.cfg_model = config.get(f"model_{self.core_model_name.lower()}", {})
         self.cfg_refiner = config.get("refiner", {})
-        cfg_opt = config["training"]["optimizer"]
-        cfg_sch = config["training"]["scheduler"]      
+        cfg_opt = config["training"]["optimizer"]      # optimizer name from default.yaml
+        cfg_sch = config["training"]["scheduler"]      # scheduler name from default.yaml
         
         self.K_max = config["refiner"]["k_max"]
         self.min_noise_std = float(config["refiner"]["min_noise_std"])
@@ -72,19 +71,38 @@ class PDERefiner(L.LightningModule):
             pred = self.neural_operator(x_in, time=time*self.time_multiplier)
             y_noised = self.scheduler.step(pred, k, y_noised).prev_sample
         if self.use_residual:
-            return y_noised * self.difference_weights + x[:, 0:self.N]
+            return y_noised * self.difference_weights + x[:, 0:1]
         return y_noised * self.difference_weights
     
     def train_step(self, x, y, cond):
+        # Residual training step
         if self.use_residual:
-            residual = (y - x[:, 0:self.N]) / self.difference_weights
+            residual = (y - x[:, 0:1]) / self.difference_weights
         else: residual = y
+        # DEBUG: Residual-Statistiken loggen
+        # with torch.no_grad():
+        #     res_min = residual.min().item()
+        #     res_max = residual.max().item()
+        #     res_std = residual.std().item()
+        #     print(
+        #         f"[train_step] residual: std={res_std:.6f}, "
+        #         f"min={res_min:.6f}, max={res_max:.6f}",
+        #         flush=True
+        #     )
+        # print(residual.min(), residual.max())
         k = torch.randint(0, self.scheduler.config.num_train_timesteps, (x.shape[0],), device=x.device)
+        # v-prediction target
+        # noise_factor = self.scheduler.alphas_cumprod.to(x.device)[k]
+        # noise_factor = noise_factor.view(-1, *[1 for _ in range(x.ndim - 1)])
+        # signal_factor = 1 - noise_factor
         noise = torch.randn_like(residual)
         y_noised = self.scheduler.add_noise(residual, noise, k)
+        # Model operations
         x_in = torch.cat([x, y_noised, cond], dim=1)
         pred = self.neural_operator(x_in, time=k*self.time_multiplier)
+        # target = (noise_factor ** 0.5) * noise - (signal_factor ** 0.5) * residual
         target = self.scheduler.get_velocity(residual, noise, k)
+        # Compute loss
         loss = self.train_criterion(pred, target)
         return loss, pred, target
 
@@ -232,7 +250,7 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
 
     STRATEGY = config["training"]["strategy"]
-    assert STRATEGY in [1,2,3,4], "STRATEGY must be 1, 2, 3, or 4"
+    assert STRATEGY in [1,2,3,4,5], "STRATEGY must be 1, 2, 3, or 4"
 
     N = config["training"]["N"]
     assert N >= 1, "N must be at least 1"
@@ -265,20 +283,7 @@ if __name__ == "__main__":
     L.seed_everything(config["training"]["seed"], workers=True)
 
     use_model = config["training"]["model"]
-    if use_model.upper() == "FNO":
-        if config["model_fno"]["in_dim"] != IN_DIM:
-            config["model_fno"]["in_dim"] = IN_DIM
-        if config["model_fno"]["out_dim"] != OUT_DIM:
-            config["model_fno"]["out_dim"] = OUT_DIM
-        model_core = FNO2dRefiner(
-            modes1=config["model_fno"]["modes1"],
-            modes2=config["model_fno"]["modes2"],
-            width=config["model_fno"]["width"],
-            in_dim=config["model_fno"]["in_dim"],
-            out_dim=config["model_fno"]["out_dim"],
-            pad=config["model_fno"]["pad"]
-        )
-    elif use_model.upper() == "CNO_TEMP":
+    if use_model.upper() == "CNO_TEMP":
         config["model_cno_temp"]["time_steps"] = config["refiner"]["k_max"]
         if config["model_cno_temp"]["in_dim"] != IN_DIM:
             config["model_cno_temp"]["in_dim"] = IN_DIM
@@ -335,8 +340,8 @@ if __name__ == "__main__":
     )
     lr_cb = LearningRateMonitor(logging_interval="epoch")
 
-    patience = 350
-    min_delta = 0.001
+    patience = 500
+    min_delta = 0.0001
     early_cb = EarlyStopping(
         monitor="val_rel_l2",
         patience=patience,
@@ -356,7 +361,7 @@ if __name__ == "__main__":
             devices="auto",
             precision="16-mixed" if torch.cuda.is_available() else "32-true",
             logger=logger,
-            callbacks=[ckpt_cb, lr_cb, early_cb],
+            callbacks=[ckpt_cb, lr_cb],
             log_every_n_steps=100
         )
     else:
@@ -365,7 +370,7 @@ if __name__ == "__main__":
             max_epochs=config["training"]["epochs"],
             accelerator="cpu",
             logger=logger,
-            callbacks=[ckpt_cb, lr_cb, early_cb],
+            callbacks=[ckpt_cb, lr_cb],
             log_every_n_steps=100,
             
         )

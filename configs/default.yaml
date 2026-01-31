@@ -4,7 +4,7 @@ training:
   epochs: 2000
   seed: 0
   test_split: 0.2
-  strategy: 3                                   # Valid strategies: 1, 2, 3, 4
+  strategy: 1                                   # Valid strategies: 1, 2, 3, 4
   N: 1
   model: "cno_temp"                                  # Valid models "cno", "fno", "cno_temp"
   optimizer: "optimizer_adamw"                  # Save name of optimizer as it's dictionary is named in this file
@@ -70,6 +70,7 @@ refiner:
   difference_weights: 1
   ema_decay: 0.995
   use_refiner: True
+  use_perturbation: True
 
 optimizer_adam:
   optimizer: "torch.optim.Adam"

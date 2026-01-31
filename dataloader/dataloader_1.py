@@ -106,7 +106,7 @@ class PDEDatasetLoader_Single(Dataset):
             temp = (temp - self.min_model) / (self.max_model - self.min_model)
             target_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
 
-        temp_tensor   = torch.cat(temp_bundle[::-1], dim=0)     # (N,H,W), list gets returned that u_prev is at index 0
+        temp_tensor   = torch.cat(temp_bundle, dim=0)     # (N,H,W), list gets returned that u_prev is at index 0 [::-1]
         target_tensor = torch.cat(target_bundle, dim=0)   # (N,H,W)
         power_tensor  = torch.stack(power_bundle, dim=0)  # (2N,1,H,W)
         shift_tensor  = torch.stack(shift_bundle, dim=0)  # (2N,2,H,W)

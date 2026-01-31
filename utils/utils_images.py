@@ -69,7 +69,7 @@ def save_temperature_plot(temp_tensor,
     plt.figure(figsize=(5, 4))
     im = plt.imshow(temp_tensor, cmap="inferno", origin="lower", vmin=vmin, vmax=vmax)
     plt.colorbar(im, label=label)
-    plt.title(f"{name_prefix} @ {timestamp}")
+    plt.title(f"{name_prefix}")
     plt.tight_layout()
     plt.savefig(filename, dpi=150)
     plt.close()
@@ -156,7 +156,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "results_val", start_epoch: int = 0):
+def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "results_val", start_epoch: int = 0,title="Starting from epoch ?"):
     """
     Plot train and validation loss curves from a metrics CSV file (log-scaled y-axis).
 
@@ -175,12 +175,12 @@ def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "resul
     # --- Select columns based on metric ---
     metric = metric.upper()
     if metric == "L1":
-        train_col = "train_l1_percent"
-        val_col = "val_rel_l1_percent"
+        train_col = "train_l1"
+        val_col = "val_rel_l1"
         ylabel = "L1 (%)"
     elif metric == "L2":
-        train_col = "train_rel_l2_percent"
-        val_col = "val_rel_l2_percent"
+        train_col = "train_rel_l2"
+        val_col = "val_rel_l2"
         ylabel = "Relative L2 (%)"
     elif metric == "MSE":
         train_col = "train_mse"
@@ -216,7 +216,8 @@ def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "resul
     plt.xlabel("Epoch")
     plt.ylabel(ylabel)
     plt.yscale("log")
-    plt.title(f"Training vs Validation {metric} Loss (log scale)\nStarting from epoch {start_epoch}")
+    # plt.ylim(2e-6, 9e-3)
+    plt.title(f"Training vs Validation {metric} Loss (log scale)\n{title}")
     plt.legend()
     plt.grid(True, linestyle="--", alpha=0.5, which="both")
 
@@ -229,9 +230,91 @@ def plot_train_val_loss(csv_path: str, metric: str = "L1", out_dir: str = "resul
 
     print(f"✅ Saved log-scale plot (starting from epoch {start_epoch}) to {out_path}")
 
+import pandas as pd
+import numpy as np
+
+def compute_train_val_cv(
+    csv_path: str,
+    metric: str = "MSE",
+    start_epoch: int = 0,
+):
+    """
+    Compute the coefficient of variation (CV = std / mean)
+    for training and validation loss curves.
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the metrics.csv file.
+    metric : str
+        Metric type: 'L1', 'L2', or 'MSE' (case-insensitive).
+    start_epoch : int
+        Ignore all epochs before this value.
+
+    Returns
+    -------
+    dict
+        Dictionary containing mean, std, and CV for train and validation.
+    """
+
+    # --- Select columns based on metric ---
+    metric = metric.upper()
+    if metric == "L1":
+        train_col = "train_l1"
+        val_col = "val_rel_l1"
+    elif metric == "L2":
+        train_col = "train_rel_l2"
+        val_col = "val_rel_l2"
+    elif metric == "MSE":
+        train_col = "train_mse"
+        val_col = "val_mse"
+    else:
+        raise ValueError("metric must be one of ['L1', 'L2', 'MSE']")
+
+    # --- Read and clean CSV ---
+    df = pd.read_csv(csv_path)
+    df = df.dropna(how="all")
+
+    df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+    df[train_col] = pd.to_numeric(df[train_col], errors="coerce")
+    df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
+
+    df = df.dropna(subset=["epoch"])
+    df = df.sort_values("epoch")
+
+    # --- Group by epoch (same logic as plotting) ---
+    grouped = df.groupby("epoch")[[train_col, val_col]].mean()
+
+    # --- Slice epochs ---
+    grouped = grouped[grouped.index >= start_epoch]
+
+    train_vals = grouped[train_col].values
+    val_vals = grouped[val_col].values
+
+    # --- Compute log-space Mean Absolute Derivative ---
+    def log_mad(x, eps: float = 1e-12):
+        """
+        Compute the mean absolute derivative in log10-space.
+        Quantifies relative epoch-to-epoch fluctuations.
+        """
+        x = np.clip(x, eps, None)          # avoid log(0)
+        x_log = np.log10(x)
+        if len(x_log) < 2:
+            return np.nan
+        return np.mean(np.abs(np.diff(x_log)))
+
+
+    train_log_mad = log_mad(train_vals)
+    val_log_mad   = log_mad(val_vals)
+
+    return {
+        "train": {"log_mad": train_log_mad},
+        "validation": {"log_mad": val_log_mad},
+    }
+
 
 
 if __name__ == "__main__":
-    plot_train_val_loss("checkpoints/F2/logs/version_0/metrics.csv", metric="L1", start_epoch=250, out_dir="results_val_F2")
-
+    # plot_train_val_loss("checkpoints/K9_NEU/logs/version_0/metrics.csv", metric="MSE", start_epoch=0, out_dir="results_val", title="K=7, min_noise_std=1.00e-5")
+    print(compute_train_val_cv("checkpoints/K9_NEU2/logs/version_0/metrics.csv", metric="MSE", start_epoch=0))
     

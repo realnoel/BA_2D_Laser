@@ -20,8 +20,12 @@
 import torch, os, glob, argparse, yaml, time, csv
 from datetime import datetime
 
-from model.model_cno_timeModule_refiner import CNO2d_Temporal
-from pde_refiner import PDERefiner
+from model.model_cno_timeModule import CNO2d_Temporal
+from model.model_cno import CNO2d
+from model.model_fno import FNO2d
+from refiner_without_pertubation_training import Refiner_without_pertubation_training
+from refiner_with_pertubation_training import Refiner_with_pertubation_training
+# from pde_refiner_mod_diffusion import PDERefiner # ENTFERNEN
 from utils.utils_images import save_temperature_plot, plot_error
 from utils.utils_train import mse_evaluate_avg, relative_l2_percent, relative_l1_percent
 
@@ -33,7 +37,7 @@ def parse_args():
     p.add_argument("--ckpt", required=True, help="Name of checkpoint directory")
     p.add_argument("--mode", default="norm", choices=["norm", "phys"])
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
-    p.add_argument("--strategy", type=int, choices=[1,2,3,4])
+    p.add_argument("--strategy", type=int, choices=[1,2,3,4,5])
     p.add_argument("--steps", type=int, default=-1)
     p.add_argument("--idx", type=int, default=0)
     return p.parse_args()
@@ -88,13 +92,17 @@ def build_model(hparams):
 
     model_cfg = config["model_cfg"]
 
-    if use_model == "CNO_TEMP":
-        core_model = CNO2d_Temporal(**model_cfg)
+    if use_model == "CNO":
+        return CNO2d(**model_cfg)
+    elif use_model == "FNO":
+        return FNO2d(**model_cfg)
+    elif use_model == "CNO_TEMP":
+        if config["refiner"]["use_perturbation"]:
+            return Refiner_with_pertubation_training(neural_operator = CNO2d_Temporal(**model_cfg), config = config)
+        else:
+            return Refiner_without_pertubation_training(neural_operator = CNO2d_Temporal(**model_cfg), config = config)
     
-    return PDERefiner(
-        neural_operator=core_model,
-        config=config
-    )
+    return 0
 
 # ---------------------------------------------------------
 def feature_to_physical_space_T(T, norm):
@@ -118,14 +126,14 @@ def save_rollout_csv(out_dir, rollout_times):
 
     print(f"[INFO] Saved rollout timing CSV to {filename}")
 
-def save_metrics_csv(out_dir, metrics):
+def save_metrics_csv(out_dir, metrics, pred, gt):
     os.makedirs(out_dir, exist_ok=True)
     filename = os.path.join(out_dir, "metrics.csv")
 
     # Summary first: global averages
-    avg_l1 = sum(m[1] for m in metrics) / len(metrics)
-    avg_l2 = sum(m[2] for m in metrics) / len(metrics)
-    avg_mse = sum(m[3] for m in metrics) / len(metrics)
+    avg_l1 = relative_l1_percent(pred, gt)
+    avg_l2 = relative_l2_percent(pred, gt)
+    avg_mse = mse_evaluate_avg(pred, gt)
 
     summary = [("summary", avg_l1, avg_l2, avg_mse)]
 
@@ -176,8 +184,11 @@ def rollout():
         from dataloader.dataloader_2 import PDEDatasetLoader_Multi
     elif args.strategy == 3:
         from dataloader.dataloader_3 import PDEDatasetLoader_Multi
-    else:
+    elif args.strategy == 4:
         from dataloader.dataloader_4 import PDEDatasetLoader_Multi
+    else:
+        print(f"INVALID STRATEGY: {args.strategy}")
+        return 0
 
     # LOAD NORMS + TEST DATASET
     N = hparams["training"]["N"]
@@ -204,12 +215,13 @@ def rollout():
 
     # LOAD SEQUENCE
     x, y, cond = val_ds[args.idx]          # shapes (T,C,H,W)
+    # x, y = val_ds[args.idx]
     x = x.unsqueeze(0).to(device)
     y = y.unsqueeze(0).to(device)
     cond = cond.unsqueeze(0).to(device)
 
-    print(f"Input:  {x.shape}")
-    print(f"Target: {y.shape}")
+    # print(f"Input:  x:{x.shape}, cond:{cond.shape}")
+    print(f"Target: y:{y.shape}")
 
     B, T, _, H, W = y.shape
     assert B == 1
@@ -217,6 +229,7 @@ def rollout():
     # initial temp window (history)
     # temp_stack = x[:, 0, 0:N, ...].contiguous()     # (1,N,H,W)
     temp_stack = x[:, 0, ...]
+    # temp_stack = x[:, 66, ...] # ENTFERNEN
 
     preds = []
     gt = []                      # (B, N, H, W)
@@ -225,7 +238,8 @@ def rollout():
     rollout_times, metrics = [], []
 
     # ROLLOUT LOOP
-    for t in range(0, steps_calc, N):
+    for t in range(0, steps_calc):
+    # for t in range(67, 67+1): # ENTFERNEN
 
         cond_t = cond[:, t, ...].contiguous()          # (B, C_exog, H, W)
         temp_prev = temp_stack                          # (B, N, H, W)
@@ -299,14 +313,14 @@ def rollout():
     # print(f"{gt[0, :, 0].shape} ground truth frames.")
 
     # SAVE RESULTS
-    out_dir = f"results_val/{timestamp}"
+    out_dir = f"results_val/{timestamp}_{args.ckpt}_{args.mode}_{steps_calc}_{args.strategy}"
     for t in range(steps_return):
         save_temperature_plot(preds[t][0], f"{out_dir}/results_pred",
                               f"pred_t{t}-{args.ckpt}")
         save_temperature_plot(gt[t], f"{out_dir}/results_gt",
                               f"gt_t{t}-{args.ckpt}")
-        save_temperature_plot(mse_mask[t][0], f"{out_dir}/results_mse",
-                              f"mse_t{t}-{args.ckpt}")
+        save_temperature_plot((preds[t][0] - gt[t]).abs(), f"{out_dir}/error_map",
+                              f"error_map{t}-{args.ckpt}",scale_fix=True, max_val=500)
     
     # Runtime informations
     total_time = sum(rt[2] for rt in rollout_times)
@@ -314,18 +328,18 @@ def rollout():
     rollout_times = [summary_entry] + rollout_times
     save_rollout_csv(out_dir, rollout_times)
 
-    save_metrics_csv(out_dir, metrics)
+    save_metrics_csv(out_dir, metrics, preds, gt)
 
     plot_error(rel_l2, out_dir, "rel_l2.png",
-               f"Rel-L2 {args.ckpt}", "Rel-L2 [%]", "t")
+               f"Rel-L2 {args.ckpt} - {args.mode}".upper(), "Rel-L2 [%]", "t")
     plot_error(rel_l1, out_dir, "rel_l1.png",
-               f"Rel-L1 {args.ckpt}", "Rel-L1 [%]", "t")
+               f"Rel-L1 {args.ckpt} - {args.mode}".upper(), "Rel-L1 [%]", "t")
     plot_error(mse_error, out_dir, "mse.png",
-               f"MSE {args.ckpt}", "MSE", "t")
+               f"MSE {args.ckpt} - {args.mode}".upper(), "MSE", "t")
 
-    print(f"Avg MSE:    {mse_evaluate_avg(preds, gt):.4e}")
-    print(f"Avg Rel-L2: {relative_l2_percent(preds, gt):.4f}%")
-    print(f"Avg Rel-L1: {relative_l1_percent(preds, gt):.4f}%")
+    print(f"Avg MSE:    {mse_evaluate_avg(preds, gt):.4e}".replace('.', ','))
+    print(f"Avg Rel-L1: {relative_l1_percent(preds, gt):.4f}%".replace('.', ','))
+    print(f"Avg Rel-L2: {relative_l2_percent(preds, gt):.4f}%".replace('.', ','))
     print("Done.")
 
 if __name__ == "__main__":

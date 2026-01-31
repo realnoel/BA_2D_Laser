@@ -109,7 +109,7 @@ class PDEDatasetLoader_Single(Dataset):
         temp = (temp - self.min_model) / (self.max_model - self.min_model)
         target_bundle.append(temp.permute(2, 0, 1))  # (1, H, W)
 
-        temp_tensor   = torch.cat(temp_bundle[::-1], dim=0)     # (N,H,W), list gets returned that u_prev is at index 0
+        temp_tensor   = torch.cat(temp_bundle, dim=0)     # (N,H,W), list gets returned that u_prev is at index 0
         target_tensor = torch.cat(target_bundle, dim=0)   # (1,H,W)
         power_tensor  = torch.stack(power_bundle, dim=0)  # (N+1,1,H,W)
         shift_tensor  = torch.stack(shift_bundle, dim=0)  # (N+1,2,H,W)
@@ -117,84 +117,84 @@ class PDEDatasetLoader_Single(Dataset):
         return temp_tensor, power_tensor, shift_tensor, target_tensor
 
 class PDEDatasetLoader_Multi(PDEDatasetLoader_Single):
-    def __init__(self, which, dtype=torch.float32, s=44, N=1, K=1):
+    def __init__(self, which, dtype=torch.float32, s=44, N=1, K=1, refiner_output=False):
         super().__init__(which, dtype, s, N)
         self.K = K
-        self.N = N 
-    
+        self.N = N
+        self.refiner_output = refiner_output
+
     def __getitem__(self, idx):
-        """
-        Multi-step PDE dataset loader.
+        xs, conds, ys = [], [], []
 
-        Returns sequences of length K. Each sequence contains K consecutive steps.
+        for i in range(self.K):
+            temp, power, shift, target = super().__getitem__(idx + i)
+            # Shapes:
+            # temp:  (N,   H, W)      → T_{-N} ... T_{-1}
+            # power: (N+1,1, H, W)    → Q_{-N} ... Q_0
+            # shift: (N+1,2, H, W)    → (dx,dy)_{-N} ... (dx,dy)_0
+            # target: (1, H, W)       → T_{0} oder T_{+1}, je nach Definition
 
-        For each step, the model input concatenates:
-            - Past N temperature fields ......................... (N, H, W)
-            - (N + 1) power input fields Q ...................... (N+1, H, W)
-            - (N + 1) spatial shift fields (dx, dy) ............. (2N+2, H, W)
+            if not self.refiner_output:
+                # -----------------------------
+                # Full concatenation mode:
+                # Zeitlich sortiert:
+                #   T_-N, Q_-N, dx_-N, dy_-N,
+                #   ...
+                #   T_-1, Q_-1, dx_-1, dy_-1,
+                #   Q_0, dx_0, dy_0
+                # -----------------------------
+                x_channels = []
 
-        → total input channels  = 4 N + 3
-        (N past T + (N+1) Q + 2×(N+1) shifts)
+                # Vergangene N Schritte: t=-N ... -1
+                for t in range(self.N):
+                    # T_{t-N}
+                    x_channels.append(temp[t:t+1, ...])            # (1,H,W)
 
-        → target channels       = 1
-        (future temperature)
+                    # Q_{t-N}
+                    x_channels.append(power[t, ...])               # (1,H,W)
 
-        Shapes:
-            seq_inp : (K, 4N+3, H, W)
-            seq_tgt : (K, 1,    H, W)
-        """
-        inp_list, tgt_list = [], []
+                    # dx_{t-N}, dy_{t-N}
+                    x_channels.append(shift[t, 0:1, ...])          # (1,H,W)
+                    x_channels.append(shift[t, 1:2, ...])          # (1,H,W)
 
-        if self.K > 1:
-            for i in range(self.K):
-                temp, power, shift, target = super().__getitem__(idx + i)
+                # Aktueller Schritt t = 0: nur Q_0, dx_0, dy_0
+                x_channels.append(power[self.N, ...])              # Q_0 (1,H,W)
+                x_channels.append(shift[self.N, 0:1, ...])         # dx_0 (1,H,W)
+                x_channels.append(shift[self.N, 1:2, ...])         # dy_0 (1,H,W)
 
-                temp_c = temp                                
-                power_c = power.reshape(-1, self.s, self.s) 
-                shift_c = shift.reshape(-1, self.s, self.s)  
+                # (4N + 3, H, W)
+                x_t = torch.cat(x_channels, dim=0)
 
-                inp_t = torch.cat([temp_c, power_c, shift_c], dim=0) 
-                tgt_t = target                                       
-                inp_list.append(inp_t)
-                tgt_list.append(tgt_t)
+                xs.append(x_t)
+                ys.append(target)  # (1,H,W)
 
-            seq_inp = torch.stack(inp_list, dim=0)  
-            seq_tgt = torch.stack(tgt_list, dim=0)  
-            return seq_inp, seq_tgt # (K, 4N+3, H, W), (K, 1, H, W)
-        
-        elif self.K == 1:
-            temp, power, shift, target = super().__getitem__(idx)
-            
-            temp_c = temp                                
-            power_c = power.reshape(-1, self.s, self.s)  
-            shift_c = shift.reshape(-1, self.s, self.s)  
+            else:
+                # Refiner mode: wie gehabt, aber hier kannst du bei Bedarf
+                # auch eine zeitliche Sortierung in cond einbauen
+                temp_c = temp                     # (N,H,W)
+                power_c = power.view(-1, self.s, self.s)   # (N+1, H, W) → flach
+                shift_c = shift.view(-1, self.s, self.s)   # (2*(N+1),H,W)
+                y_t = target
 
-            inp_t = torch.cat([temp_c, power_c, shift_c], dim=0)  
-            tgt_t = target                                      
+                x_t = temp_c
+                cond_t = torch.cat([power_c, shift_c], dim=0)
 
-            return inp_t, tgt_t # (4N+3, H, W), (1, H, W)
+                xs.append(x_t)
+                ys.append(y_t)
+                conds.append(cond_t)
+
+        if self.K == 1:
+            if not self.refiner_output:
+                return xs[0], ys[0]
+            else:
+                return xs[0], ys[0], conds[0]
+
+        # K > 1 → stack along time dimension
+        x = torch.stack(xs, dim=0)
+        y = torch.stack(ys, dim=0)
+
+        if not self.refiner_output:
+            return x, y
         else:
-            raise ValueError(f"Invalid K: {self.K}")
-
-    def get_norm(self):
-        norm = (self.min_p, self.max_p,
-                self.min_shift, self.max_shift,
-                self.min_model, self.max_model)
-        return norm
-    
-    def load_norm(self, norm):
-        """Accepts (tuple) or (dict) and loads into this dataset."""
-        if isinstance(norm, dict):
-            self.min_p     = float(norm["min_p"])
-            self.max_p     = float(norm["max_p"])
-            self.min_shift = float(norm["min_shift"])
-            self.max_shift = float(norm["max_shift"])
-            self.min_model = float(norm["min_model"])
-            self.max_model = float(norm["max_model"])
-        else:
-            self.min_p     = float(norm[0])
-            self.max_p     = float(norm[1])
-            self.min_shift = float(norm[2])
-            self.max_shift = float(norm[3])
-            self.min_model = float(norm[4])
-            self.max_model = float(norm[5])
+            cond = torch.stack(conds, dim=0)
+            return x, y, cond

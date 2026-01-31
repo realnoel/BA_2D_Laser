@@ -1,8 +1,5 @@
-# Enhancing Long-Horizon Predictions of Neural PDE Solvers Through Refinement-Based Rollout Strategies
+# Diffusion-Based Refinement for Robust Long-Horizon Predictions with Neural Operators
 
-This repository contains the code and dataset loaders used for the Bachelor thesis **"Enhancing Long-Horizon Predictions of Neural PDE Solvers Through Refinement-Based Rollout Strategies"** at ETH Zürich, Department of Mechanical and Process Engineering (MAVT).
+Conventional numerical solvers for time-dependent partial differential equations are computationally expensive, motivating surrogate models for fast inference. Neural Operators such as the Fourier Neural Operator (FNO) and Convolutional Neural Operator (CNO) can efficiently predict spatio-temporal fields, but autoregressive long-horizon rollouts often degrade due to error accumulation. 
 
-The project explores **neural operator architectures** (Fourier Neural Operator, Convolutional Neural Operator, PDE-Refiner) for **data-driven modeling of thermal partial differential equations (PDEs)** in laser-based heat transfer.  
-The models are trained on spatio-temporal temperature field data simulated on a 2-D metal plate, with **exogenous control variables** representing laser power input and spatial displacement fields.
-
----
+In this thesis, we evaluate diffusion-based iterative refinement with a Neural Operator backbone for long-horizon temperature-field prediction in a laser-cutting setting. We benchmark against FNO and CNO baselines and study two variants, with and without input perturbation. On a 165 time-step rollout, input perturbation achieves average relative errors of 8.10% rel. L1, 13.01% rel. L2. Overall, while input pertubation improved stability, neither refinement variant achieved consistent performance gains over the baseline operators in terms of L1 and L2 errors for this problem setting.

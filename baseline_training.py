@@ -2,7 +2,7 @@
 import pytorch_lightning as L
 import torch
 import yaml
-import numpy as np
+import os
 
 from torch import nn
 from torch.utils.data import DataLoader, random_split
@@ -13,11 +13,9 @@ from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger
 
-from model.model_fno_baseline import FNO2dBaseline
-from model.pde_refiner import PDERefiner
-from model.model_fno_refiner import FNO2dRefiner
-
-from refiner.model_cno import CNO2d # Delete
+from model.model_fno import FNO2d
+from model.model_cno import CNO2d
+# from utils_images import save_temperature_plot  # optional
 
 # ---------- Helpers ----------
 def relative_l2_percent(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -55,57 +53,57 @@ def relative_l1_percent(Yp: torch.Tensor, Yt: torch.Tensor) -> torch.Tensor:
 
 # ---------- LightningModule ----------
 class LitModel(L.LightningModule):
-    def __init__(self, baseline: nn.Module, refiner: nn.Module, config: dict, K: int, name_base: str, name_ref: str):
+    def __init__(self, model: nn.Module, config: dict, use_model: str):
         super().__init__()
-        self.baseline = baseline
-        self.refiner = refiner
+        self.model = model
         self.config = config
-        self.K = K
-        self.crit = nn.MSELoss()
+        self.criterion = nn.MSELoss()
+        self.use_model = use_model
 
         # pick the right block to store
-        if name_base.upper() == "CNO":
-            base_cfg = dict(config.get("model_cno", {}))
-        elif name_base.upper() == "FNO":
-            base_cfg = dict(config.get("model_fno", {}))
+        if use_model.upper() == "CNO":
+            model_cfg = dict(config.get("model_cno", {}))
+            model_name = "CNO"
+        elif use_model.upper() == "FNO":
+            model_cfg = dict(config.get("model_fno", {}))
+            model_name = "FNO"
         else:
-            raise ValueError(f"Unknown name_base={name_base!r}")
-        
-        if name_ref.upper() == "REFINER_MODEL_FNO":
-            ref_cfg = dict(config.get("refiner_model_fno", {}))
-        else:
-            raise ValueError(f"Unknown name_ref={name_ref!r}")
+            raise ValueError(f"Unknown use_model={use_model!r}")
 
         # keep ckpt small but self-contained
         opt_key = self.config["training"]["optimizer"]      # optimizer name from default.yaml
         sch_key = self.config["training"]["scheduler"]      # scheduler name from default.yaml
         self.save_hyperparameters({
-            "name_base":  name_base,     
-            "base_cfg":   base_cfg,      
-            "name_ref":   name_ref,
-            "ref_cfg":    ref_cfg,
+            "model_name":  model_name,     # "CNO" or "FNO"
+            "model_cfg":   model_cfg,      # ONLY the chosen sub-config
             "optimizer":   self.config.get(opt_key, {}), 
             "scheduler":   self.config.get(sch_key, {}),
             "training":    self.config.get("training", {})
         })
 
     def forward(self, x):
-        return self.refiner(x)
+        return self.model(x)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        u_t = self.baseline(x)[:, 0:1, :, :]
-        u_prev = x[:, 0:1, :, :]
-        pred = self.refiner(u_t, u_prev)
-        loss = self.crit(pred, y)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        # print(f"y dim: {y.ndim}, x dim: {x.ndim}")
+        # print(f"y shape: {y.shape}, x shape: {x.shape}")
+        y_hat = self(x)
+        if y.ndim == 3:
+            y = y.unsqueeze(1)
+        # print(f"y_hat dim: {y_hat.ndim}")
+        # print(f"y_hat shape: {y_hat.shape}")
+        assert y_hat.shape == y.shape, f"pred {y_hat.shape} vs tgt {y.shape}" # Sanity check
+        # print(next(self.model.parameters()).device)
+        # print(x.device)
+        # unify dims like in your loop
+        loss = self.criterion(y_hat, y)
+        self.log("train_mse", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        u_t = self.baseline(x)[:, 0:1, :, :]
-        u_prev = x[:, 0:1, :, :]
-        y_hat = self.refiner(u_t, u_prev)
+        y_hat = self(x)
         rell2 = relative_l2_percent(y_hat, y)
         mse = mse_evaluate_avg(y_hat, y)
         rell1 = relative_l1_percent(y_hat, y)
@@ -121,9 +119,9 @@ class LitModel(L.LightningModule):
         sch_conf = self.config[sch_key]                     # hyperparameter of scheduler from default.yaml
         
         if self.config['training']['optimizer'] == "optimizer_adam":
-            optimizer = Adam(self.parameters(), lr=opt_conf["lr"])
+            optimizer = Adam(self.parameters(), lr=float(opt_conf["lr"]))
         elif self.config['training']['optimizer'] == "optimizer_adamw":
-            optimizer = AdamW(self.parameters(), lr=opt_conf["lr"], weight_decay=opt_conf['weight_decay'])
+            optimizer = AdamW(self.parameters(), lr=float(opt_conf["lr"]), weight_decay=float(opt_conf['weight_decay']))
         else:
             ValueError(f"Optimizer not installed {self.config['training']['optimizer']}")
 
@@ -136,7 +134,7 @@ class LitModel(L.LightningModule):
             scheduler = StepLR(
                 optimizer,
                 step_size=sch_conf["step_size"],
-                gamma=sch_conf["gamma"]
+                gamma=float(sch_conf["gamma"])
             )
         else:
             ValueError(f"Scheduler not installed {self.config['training']['scheduler']}")
@@ -168,6 +166,13 @@ class PDEDataModule(L.LightningDataModule):
         n_val = int(self.config["training"]["test_split"] * n_total)
         n_train = n_total - n_val
 
+        # (optional) expose your normalization tuple if needed later
+        self.norm_tuple = (
+            full_ds.min_p, full_ds.max_p,
+            full_ds.min_shift, full_ds.max_shift,
+            full_ds.min_model, full_ds.max_model
+        )
+
         gen = torch.Generator().manual_seed(self.seed)
         self.train_ds, self.val_ds = random_split(full_ds, [n_train, n_val], generator=gen)
 
@@ -185,30 +190,6 @@ class PDEDataModule(L.LightningDataModule):
                          num_workers=0
                          )
     
-def load_baseline_weights(baseline_model: nn.Module, ckpt_path: str) -> nn.Module:
-    print(f"[INFO] Loading baseline checkpoint: {ckpt_path}")
-
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-
-    # Lightning saves parameters under "state_dict"
-    state_dict = ckpt["state_dict"]
-
-    # Filter out keys that belong only to the model
-    model_state_dict = {
-        k.replace("model.", ""): v
-        for k, v in state_dict.items()
-        if k.startswith("model.")
-    }
-
-    baseline_model.load_state_dict(model_state_dict, strict=False)
-
-    # Freeze baseline
-    for p in baseline_model.parameters():
-        p.requires_grad = False
-
-    print("[INFO] Baseline weights loaded successfully.")
-    return baseline_model.eval()
-    
 # ---- BASELINE MODELS -----
 #
 # STRATEGY 1: Exogenous variables (Q, dx, dy) N future steps and N past steps.     Endogenous variable (T) only N past steps, target is N future steps.
@@ -221,15 +202,13 @@ if __name__ == "__main__":
     with open("configs/default.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    with open(config["refiner"]["baseline_hparams"], "r") as f:
-        baseline_hparams = yaml.safe_load(f)
-
-    # STRATEGY = config["training"]["strategy"]
-    STRATEGY = 1
+    STRATEGY = config["training"]["strategy"]
     assert STRATEGY in [1,2,3,4], "STRATEGY must be 1, 2, 3, or 4"
 
     N = config["training"]["N"]
     assert N >= 1, "N must be at least 1"
+
+    config["training"]["using_refiner"] = False  # default: no refiner
 
     if STRATEGY == 1:
         print("[INFO] Using STRATEGY 1: Exogenous variables N future steps and N past steps. Endogenous variable (T) only N past steps, target is N future steps.")
@@ -254,57 +233,37 @@ if __name__ == "__main__":
 
     L.seed_everything(config["training"]["seed"], workers=True)
 
-    name_base = baseline_hparams["training"]["model"]
-    if name_base == "FNO":
-        model_core = FNO2dBaseline(
-            modes1=baseline_hparams["model_cfg"]["modes1"],
-            modes2=baseline_hparams["model_cfg"]["modes2"],
-            width=baseline_hparams["model_cfg"]["width"],
-            in_dim=baseline_hparams["model_cfg"]["in_dim"],
-            out_dim=baseline_hparams["model_cfg"]["out_dim"],
-            pad=baseline_hparams["model_cfg"]["pad"]
+    use_model = config["training"]["model"]
+    if use_model.upper() == "FNO":
+        if config["model_fno"]["in_dim"] != IN_DIM:
+            config["model_fno"]["in_dim"] = IN_DIM
+        if config["model_fno"]["out_dim"] != OUT_DIM:
+            config["model_fno"]["out_dim"] = OUT_DIM
+        model_core = FNO2d(
+            modes1=config["model_fno"]["modes1"],
+            modes2=config["model_fno"]["modes2"],
+            width=config["model_fno"]["width"],
+            in_dim=config["model_fno"]["in_dim"],
+            out_dim=config["model_fno"]["out_dim"],
+            pad=config["model_fno"]["pad"]
         )
-    elif name_base == "CNO":
+    elif use_model.upper() == "CNO":
+        if config["model_cno"]["in_dim"] != IN_DIM:
+            config["model_cno"]["in_dim"] = IN_DIM
+        if config["model_cno"]["out_dim"] != OUT_DIM:
+            config["model_cno"]["out_dim"] = OUT_DIM
         model_core = CNO2d(
-            in_dim=baseline_hparams["model_cfg"]["in_dim"],
-            out_dim=baseline_hparams["model_cfg"]["out_dim"],
-            size=baseline_hparams["model_cfg"]["size"],
-            N_layers=baseline_hparams["model_cfg"]["N_layers"],
-            N_res=baseline_hparams["model_cfg"]["N_res"],
-            N_res_neck=baseline_hparams["model_cfg"]["N_res_neck"],
-            channel_multiplier=baseline_hparams["model_cfg"]["channel_multiplier"],
+            in_dim=config["model_cno"]["in_dim"],
+            out_dim=config["model_cno"]["out_dim"],
+            size=config["model_cno"]["size"],
+            N_layers=config["model_cno"]["N_layers"],
+            N_res=config["model_cno"]["N_res"],
+            N_res_neck=config["model_cno"]["N_res_neck"],
+            channel_multiplier=config["model_cno"]["channel_multiplier"],
         )
-    else:
-        raise ValueError(f"Unknown model {name_base!r}, valid options are 'FNO' and 'CNO'")
-    
-    # -- load weights from baseline & freeze --
-    config["training"]["using_refiner"] = True
-    baseline = load_baseline_weights(model_core, config["refiner"]["baseline_path"])
 
-    # -- build refiner_core model --
-    name_ref = config["refiner"]["model"]
-    if name_ref == "refiner_model_fno":
-        refiner_core = FNO2dRefiner(
-            modes1=config["refiner_model_fno"]["modes1"],
-            modes2=config["refiner_model_fno"]["modes2"],
-            width=config["refiner_model_fno"]["width"],
-            in_dim=config["refiner_model_fno"]["in_dim"],
-            out_dim=config["refiner_model_fno"]["out_dim"],
-            pad=config["refiner_model_fno"]["pad"]
-        )
-    else:
-        raise ValueError(f"Unknown refiner model {name_ref!r}, valid option is 'refiner_model_fno'")
-    
-    # -- build refiner --
-    refiner = PDERefiner(
-            model=refiner_core,
-            K=config["refiner"]["k"],
-            min_noise_std=config["refiner"]["min_noise_std"],
-            )
-
-    datamodule = PDEDataModule(baseline_hparams)
-    K = config["refiner"]["k"]
-    lit_model = LitModel(baseline=baseline, refiner=refiner, config=config, K=K, name_base=name_base, name_ref=name_ref)
+    lit_model = LitModel(model_core, config, use_model)
+    datamodule = PDEDataModule(config)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path("checkpoints") / run_id
